@@ -1,0 +1,25 @@
+# Local settings (folder paths differ per PC)
+osmm_gui_v2_settings.json
+osmm_tile_index.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Build output
+build/
+dist/
+*.spec
+
+# Site outputs and test data
+sites/
+*.gml
+*.gml.gz
+*.TAB
+*.tab
+*.DAT
+*.dat
+*.MAP
+*.map
+*.ID
+*.id

@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.0.1. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.1.0. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -35,9 +35,21 @@ The window has two tabs:
 
 - **Site**: inputs, output options and the preview map. This is all you
   normally need.
-- **Settings**: OS data folder, pipeline scripts folder and *Rebuild tile
-  index*. These are remembered, so they usually only need setting once per
-  PC. If one is wrong when you press Run, the app switches to this tab.
+- **Settings**: set once and remembered (if one is wrong when you press
+  Run, the app switches to this tab):
+  - *Folders and data*: OS data folder, pipeline scripts folder,
+    *Rebuild tile index*.
+  - *Output files*:
+    - **Style the shapefile TAB as a red boundary** (on): untick for
+      GDAL's plain black outline.
+    - **Also keep MIF/MID copies of the MM_* tables** (off): for other GIS
+      software or checking (stage 2 `--keep-mif`).
+    - **Delete site.gml.gz after the MM_* tables are made** (off): saves
+      space; it can always be re-extracted.
+    - **Save the run log in the output folder** (off): writes
+      `OS_Shapefile_Tool_log.txt` next to the tables, a record of what was run.
+  - *Preview*: **Show the OpenStreetMap background** (on): untick if the
+    map is slow or there's no internet.
 
 ## Using it
 
@@ -63,8 +75,9 @@ The window has two tabs:
 
 The preview map works like the OS Point Tool's: an OpenStreetMap background
 drawn in British National Grid, the 5 km OS tiles (green, labelled), the
-area that will be extracted (orange, shapefile extent + buffer) and the
-shapefile itself (blue). The exact W/S/E/N, size, centre, tiles and output
+area that will be extracted (orange dashed outline, shapefile extent +
+buffer) and the shapefile itself (red, as in the TAB output). The map is
+drawn at the map tiles' own resolution so street names stay sharp. The exact W/S/E/N, size, centre, tiles and output
 folder are listed beside it. Map tiles are cached in the temp folder (shared
 with the OS Point Tool); with no internet it shows a plain background.
 
@@ -124,6 +137,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.1.0 | Clearer preview (map drawn 1:1 so labels stay sharp; sharp text on scaled Windows displays; larger labels on white halos/panels; outline-only extraction box); shapefile drawn red. New settings: red/plain boundary TAB, keep MIF/MID, delete site.gml.gz, save run log, map background on/off |
 | 1.0.1 | Shapefile to TAB: fields with many decimal places (e.g. `area`, `perimeter`) are written as Float instead of failing; GDAL's real error message shown in the log; a table with missing records is reported as a failure |
 | 1.0.0 | Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon, `os_shapefile_tool.ico`); OpenStreetMap preview in British National Grid as in the OS Point Tool; Settings moved to their own tab; results go straight into the output folder, with an optional site subfolder; input shapefile(s) copied to the output as MapInfo TAB |
 

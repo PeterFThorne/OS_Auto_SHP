@@ -44,8 +44,13 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.0.1"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.1.0"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.1.0  Clearer preview: map drawn 1:1 (sharp labels), sharp text on
+#          scaled Windows displays, larger labels on white halos/panels,
+#          outline-only extraction box; shapefile drawn red. New settings:
+#          plain/red boundary TAB, keep MIF/MID, delete site.gml.gz,
+#          save run log, map background on/off
 #   1.0.1  Shapefile -> TAB: numbers with many decimals (e.g. area) no longer
 #          fail; GDAL's own error message shown; partial tables flagged
 #   1.0.0  Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon);
@@ -83,6 +88,11 @@ DEFAULTS = {
     "data_root": r"M:\2500MMdata",
     "scripts_dir": "",
     "reindex": False,
+    "show_map": True,          # OpenStreetMap background in the preview
+    "keep_mif": False,         # stage 2 --keep-mif
+    "delete_gml": False,       # remove site.gml.gz after styling
+    "save_log": False,         # write the run log into the output folder
+    "style_boundary": True,    # red style on the shapefile TAB (else --no-style)
     "last_dir": "",
 }
 
@@ -106,6 +116,22 @@ def icon_path():
         if candidate.exists():
             return candidate
     return None
+
+
+def set_dpi_awareness():
+    """Tell Windows the app handles display scaling itself. Without this, on
+    a display set to 125%/150% Windows stretches the whole window like an
+    image, which makes all the text (and the map) blurry."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # system DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 
 def set_windows_app_id():
@@ -398,8 +424,13 @@ class App(tk.Tk):
         super().__init__()
         self.title(APP_TITLE)
         self._set_icon()
-        self.geometry("1040x860")
-        self.minsize(920, 720)
+        # Window size in "96 dpi" pixels, scaled up on high-DPI displays
+        # (fonts scale by themselves once the app is DPI aware).
+        k = max(1.0, self.winfo_fpixels("1i") / 96.0)
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = min(int(1040 * k), int(sw * 0.95)), min(int(860 * k), int(sh * 0.88))
+        self.geometry(f"{w}x{h}")
+        self.minsize(min(int(920 * k), w), min(int(640 * k), h))
 
         self.settings_path = app_dir() / SETTINGS_NAME
         self.settings = dict(DEFAULTS)
@@ -429,7 +460,8 @@ class App(tk.Tk):
         for key in ("per_file", "same_as_input", "subfolder", "run_stage2",
                     "shp_to_tab",
                     "make_map",
-                    "open_when_done", "reindex"):
+                    "open_when_done", "reindex", "show_map", "keep_mif",
+                    "delete_gml", "save_log", "style_boundary"):
             self.vars[key] = tk.BooleanVar(value=bool(self.settings.get(key)))
         if not self.vars["scripts_dir"].get():
             self.vars["scripts_dir"].set(str(app_dir()))
@@ -442,7 +474,7 @@ class App(tk.Tk):
 
         self.vars["buffer_m"].trace_add("write", lambda *_: self._refresh())
         for key in ("per_file", "subfolder", "same_as_input", "site_name",
-                    "output_root"):
+                    "output_root", "show_map"):
             self.vars[key].trace_add("write", lambda *_: self._refresh())
         self.vars["same_as_input"].trace_add(
             "write", lambda *_: self._toggle_output())
@@ -597,7 +629,7 @@ class App(tk.Tk):
         self.canvas.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
         self.canvas.bind("<Configure>", lambda e: self._schedule_redraw())
         self.extent_lbl = ttk.Label(mid, text="", justify="left",
-                                    font=("Consolas", 9))
+                                    font=("Consolas", 10))
         self.extent_lbl.grid(row=0, column=1, sticky="nw", padx=6, pady=6)
 
         # --- Advanced -----------------------------------------------------
@@ -618,6 +650,28 @@ class App(tk.Tk):
                         "are added to the data folder)",
                         variable=self.vars["reindex"])\
             .grid(row=2, column=1, sticky="w", pady=(0, 4))
+
+        outf = ttk.LabelFrame(settings_tab, text="Output files")
+        outf.pack(fill="x", padx=8, pady=(0, 8))
+        for r, (key, text) in enumerate((
+                ("style_boundary", "Style the shapefile TAB as a red boundary "
+                                   "(untick for GDAL's plain black outline)"),
+                ("keep_mif", "Also keep MIF/MID copies of the MM_* tables "
+                             "(for other GIS software or checking)"),
+                ("delete_gml", "Delete site.gml.gz after the MM_* tables are "
+                               "made (saves space; it can be re-extracted)"),
+                ("save_log", "Save the run log in the output folder "
+                             "(OS_Shapefile_Tool_log.txt)"))):
+            ttk.Checkbutton(outf, text=text, variable=self.vars[key])\
+                .grid(row=r, column=0, sticky="w", padx=6, pady=2)
+
+        prevf = ttk.LabelFrame(settings_tab, text="Preview")
+        prevf.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Checkbutton(prevf, text="Show the OpenStreetMap background "
+                        "(untick if slow or offline)",
+                        variable=self.vars["show_map"])\
+            .grid(row=0, column=0, sticky="w", padx=6, pady=2)
+
         ttk.Label(settings_tab, foreground="#666", justify="left", text=(
             "These are remembered between sessions, so they normally only "
             "need setting once on each PC.\n"
@@ -841,13 +895,25 @@ class App(tk.Tk):
         span_w = max((bx1 - bx0) * self.PREVIEW_MARGIN, self.PREVIEW_MIN_SPAN)
         span_h = max((by1 - by0) * self.PREVIEW_MARGIN, self.PREVIEW_MIN_SPAN)
         scale = max(span_w / (cw - 2 * pad), span_h / (ch - 2 * pad))
+        show_map = self.vars["show_map"].get()
+        if show_map:
+            # Snap to a web-map zoom level so map pixels are drawn 1:1, not
+            # shrunk: street names and labels stay sharp and readable. The
+            # snap may eat into the margin round the site (never into the
+            # site box itself), so it picks the closer zoom where it can.
+            lat_c, _ = bng_to_wgs84(e, n)
+            res0 = 156543.03392 * math.cos(math.radians(lat_c))
+            slack = math.log2(self.PREVIEW_MARGIN) - 0.02
+            z = max(0, min(19, math.floor(math.log2(res0 / scale) + slack)))
+            scale = res0 / 2 ** z
         X0, Y1 = e - cw / 2 * scale, n + ch / 2 * scale   # BNG at top-left
 
         def px(x, y):
             return (x - X0) / scale, (Y1 - y) / scale
 
         # --- map background, re-projected from web-map tiles into OSGB ---
-        have_map, missing = self._draw_map(c, X0, Y1, scale, cw, ch)
+        have_map, missing = self._draw_map(c, X0, Y1, scale, cw, ch) \
+            if show_map else (False, [])
         if missing:
             gen = self.map_gen
             self.after(350, lambda: self._request_tiles(missing, gen))
@@ -866,26 +932,21 @@ class App(tk.Tk):
             vc, vd = min(cc, cw), min(d, ch)
             if vc - va < 40 or vd - vb < 16:
                 continue
-            tx_, ty_ = va + 4, vb + 3
-            if have_map:
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    c.create_text(tx_ + dx, ty_ + dy, text=name, anchor="nw",
-                                  fill="white", font=("Segoe UI", 8, "bold"))
-            c.create_text(tx_, ty_, text=name, anchor="nw",
-                          fill="#2f4a1f" if have_map else "#5c6e4c",
-                          font=("Segoe UI", 8, "bold" if have_map else "normal"))
+            self._label(c, va + 5, vb + 4, name, "nw",
+                        ("Segoe UI", 10, "bold"), "#24401a")
 
-        # --- extraction box(es): same style as the OS Point Tool site box ---
+        # --- extraction box(es): Point Tool orange, outline only so the map
+        #     underneath stays readable ---
         for j in jobs:
             x0, y0, x1, y1 = j["box"]
             a, b = px(x0, y1)
             cc, d = px(x1, y0)
-            c.create_rectangle(a, b, cc, d, outline="#d9480f", width=2,
-                               fill="#ffc8a0",
-                               stipple="gray25" if have_map else "gray50")
+            c.create_rectangle(a, b, cc, d, outline="white", width=5)
+            c.create_rectangle(a, b, cc, d, outline="#d9480f", width=3,
+                               dash=(10, 5))
 
-        # --- the shapefile(s) on top ---
-        blue = "#1240a8"
+        # --- the shapefile(s) on top, red as in the TAB output ---
+        red = "#e00000"
         for j in jobs:
             for k in j["files"]:
                 shp = self.shapes[k]
@@ -893,32 +954,42 @@ class App(tk.Tk):
                     step = max(1, len(part) // 2000)
                     pts = [v for x, y in part[::step] for v in px(x, y)]
                     if len(pts) >= 4:
-                        c.create_line(*pts, fill="white", width=4)
-                        c.create_line(*pts, fill=blue, width=2)
+                        c.create_line(*pts, fill="white", width=5)
+                        c.create_line(*pts, fill=red, width=2.5)
                 for x, y in shp["points"][:5000]:
                     qx, qy = px(x, y)
-                    c.create_oval(qx - 4, qy - 4, qx + 4, qy + 4, fill=blue,
-                                  outline="white", width=1.5)
+                    c.create_oval(qx - 5, qy - 5, qx + 5, qy + 5, fill=red,
+                                  outline="white", width=2)
 
-        # --- key, attribution / status ---
-        key = c.create_text(6, ch - 3, anchor="sw", font=("Segoe UI", 8),
-                            fill="#222222",
-                            text="Blue: shapefile    Orange: area extracted "
-                                 f"(+{self._buffer() or 0:g} m)    Green: 5 km OS tiles")
-        c.create_rectangle(*c.bbox(key), fill="white", outline="",
-                           stipple="gray75")
-        c.tag_raise(key)
+        # --- key, attribution / status (on solid white panels) ---
+        self._panel(c, 6, ch - 6, "sw", ("Segoe UI", 9),
+                    "Red: shapefile    Orange dashed: area extracted "
+                    f"(+{self._buffer() or 0:g} m)    Green: 5 km OS tiles",
+                    "#1a1a1a")
         if have_map:
-            t = c.create_text(cw - 3, ch - 2, anchor="se",
-                              text="\u00a9 OpenStreetMap contributors",
-                              font=("Segoe UI", 7), fill="#333333")
-            c.create_rectangle(*c.bbox(t), fill="white", outline="",
-                               stipple="gray75")
-            c.tag_raise(t)
-        elif time.time() < self.map_offline_until or (self.map_failed and not missing):
-            c.create_text(cw - 3, ch - 2, anchor="se",
-                          text="Map unavailable (no internet?)",
-                          font=("Segoe UI", 7), fill="#777777")
+            self._panel(c, cw - 6, 6, "ne", ("Segoe UI", 8),
+                        "\u00a9 OpenStreetMap contributors", "#333333")
+        elif show_map and (time.time() < self.map_offline_until
+                           or (self.map_failed and not missing)):
+            self._panel(c, cw - 6, 6, "ne", ("Segoe UI", 8),
+                        "Map unavailable (no internet?)", "#666666")
+
+    def _label(self, c, x, y, text, anchor, font, colour):
+        """Text with a white halo, readable on any map background."""
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx or dy:
+                    c.create_text(x + dx, y + dy, text=text, anchor=anchor,
+                                  font=font, fill="white")
+        c.create_text(x, y, text=text, anchor=anchor, font=font, fill=colour)
+
+    def _panel(self, c, x, y, anchor, font, text, colour):
+        """Text on a solid white box with a thin border."""
+        t = c.create_text(x, y, text=text, anchor=anchor, font=font, fill=colour)
+        x0, y0, x1, y1 = c.bbox(t)
+        box = c.create_rectangle(x0 - 4, y0 - 2, x1 + 4, y1 + 2, fill="white",
+                                 outline="#b0b0b0")
+        c.tag_raise(t, box)
 
     def _draw_map(self, c, X0, Y1, scale, cw, ch):
         """Re-project web-map tiles into the OSGB preview (as the OS Point
@@ -1072,7 +1143,11 @@ class App(tk.Tk):
         self.map_redraw_job = self.after(60, redraw)
 
     # ----- running --------------------------------------------------------
+    job_log = None
+
     def _log(self, text, tag=None):
+        if self.job_log is not None:
+            self.job_log.append(text)
         self.msgq.put(("log", text, tag))
 
     def _drain(self):
@@ -1204,6 +1279,7 @@ class App(tk.Tk):
             out_root = j["out_root"]
             self.msgq.put(("status", f"Site {i}/{len(jobs)}: {j['name']}",
                            None))
+            self.job_log = []                # copy of this site's log lines
             self._log(f"\n=== {j['name']}  ({i}/{len(jobs)})", "head")
             self._log("Shapefile(s): " + ", ".join(Path(f).name
                                                    for f in j["files"]))
@@ -1232,16 +1308,27 @@ class App(tk.Tk):
                 self._write_extent_record(site, j, cx, cy)
                 if self.vars["run_stage2"].get():
                     self._log("Stage 2: styling into MM_* tables", "head")
-                    rc, _ = self._exec(script_command(sdir / STAGE2,
-                                                      [str(site)]))
+                    s2 = [str(site)] + (["--keep-mif"]
+                                        if self.vars["keep_mif"].get() else [])
+                    rc, _ = self._exec(script_command(sdir / STAGE2, s2))
                     if self.stop_flag.is_set():
                         break
                     if rc != 0:
                         raise RuntimeError(f"stage 2 failed (exit code {rc})")
+                    if self.vars["delete_gml"].get():
+                        try:
+                            (site / "site.gml.gz").unlink()
+                            self._log("Deleted site.gml.gz (Settings: delete "
+                                      "after styling)")
+                        except OSError as exc:
+                            self._log(f"Couldn't delete site.gml.gz: {exc}",
+                                      "warn")
                 if self.vars["shp_to_tab"].get():
                     self._log("Shapefile(s) to MapInfo TAB", "head")
-                    rc, _ = self._exec(script_command(
-                        sdir / SHP2TAB, [*j["files"], "--output", str(site)]))
+                    t_args = [*j["files"], "--output", str(site)]
+                    if not self.vars["style_boundary"].get():
+                        t_args.append("--no-style")
+                    rc, _ = self._exec(script_command(sdir / SHP2TAB, t_args))
                     if self.stop_flag.is_set():
                         break
                     if rc != 0:
@@ -1259,6 +1346,14 @@ class App(tk.Tk):
                 tmp = j["site_dir"] / STAGE1_TMP
                 if tmp.exists():
                     shutil.rmtree(tmp, ignore_errors=True)
+                lines_, self.job_log = self.job_log, None
+                if self.vars["save_log"].get() and j["site_dir"].is_dir():
+                    try:
+                        (j["site_dir"] / "OS_Shapefile_Tool_log.txt").write_text(
+                            f"{APP_TITLE}  {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            + "\n".join(lines_) + "\n", encoding="utf-8")
+                    except OSError as exc:
+                        self._log(f"Couldn't save the log file: {exc}", "warn")
 
         if self.stop_flag.is_set():
             self._log("\nStopped.", "warn")
@@ -1319,6 +1414,7 @@ def main():
         sys.path.insert(0, str(Path(script).parent))
         runpy.run_path(script, run_name="__main__")
         return
+    set_dpi_awareness()
     set_windows_app_id()
     App().mainloop()
 

@@ -15,8 +15,8 @@ The output opens in MapInfo Professional 8.5:
     written as Decimal.
   * The header is checked and fixed with stage 2's make_mapinfo85_safe().
 
-Styling (unless --no-style): red 3 px outline with no fill for polygons,
-red 3 px line for polylines, red circle for points, so the boundary is
+Styling (unless --no-style): red 2 px outline with no fill for polygons,
+red 2 px line for polylines, red circle for points, so the boundary is
 visible over the MasterMap without hiding it.
 
 GDAL is found the same way as stage 2: ogr2ogr on the PATH, then the osgeo
@@ -36,8 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import osmm_style_mapinfo as stage2  # noqa: E402
 
 STYLES = {
-    "polygon": "PEN(c:#FF0000,w:3px)",
-    "line": "PEN(c:#FF0000,w:3px)",
+    "polygon": "PEN(c:#FF0000,w:2px)",
+    "line": "PEN(c:#FF0000,w:2px)",
     "point": 'SYMBOL(c:#FF0000,s:12pt,id:"mapinfo-sym-34")',
 }
 SHAPE_KIND = {1: "point", 11: "point", 21: "point", 8: "point", 18: "point",

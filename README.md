@@ -86,8 +86,8 @@ python osmm_shp_to_tab.py RedLine.shp [more.shp ...] --output <folder> [--no-sty
 - Opens in MapInfo 8.5: same GDAL settings as stage 2 (EPSG:27700, CP1252),
   large-integer fields (10+ digit numbers) are written as Decimal, and the
   header is checked with stage 2's `make_mapinfo85_safe()`.
-- Styled so it shows over the MasterMap without hiding it: red 3 px outline
-  and no fill for polygons, red 3 px line for lines, red circle for points.
+- Styled so it shows over the MasterMap without hiding it: red 2 px outline
+  and no fill for polygons, red 2 px line for lines, red circle for points.
   `--no-style` keeps GDAL's default (thin black, no fill).
 - Attribute columns are kept as they are; the record count is checked
   against the shapefile.

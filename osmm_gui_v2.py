@@ -44,8 +44,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.0.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.0.1"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.0.1  Shapefile -> TAB: numbers with many decimals (e.g. area) no longer
+#          fail; GDAL's own error message shown; partial tables flagged
 #   1.0.0  Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon);
 #          OpenStreetMap preview in British National Grid (as the OS Point
 #          Tool); Settings moved to their own tab

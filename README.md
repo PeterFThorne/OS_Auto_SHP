@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.0.0. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.0.1. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -103,6 +103,11 @@ python osmm_shp_to_tab.py RedLine.shp [more.shp ...] --output <folder> [--no-sty
 - Styled so it shows over the MasterMap without hiding it: red 2 px outline
   and no fill for polygons, red 2 px line for lines, red circle for points.
   `--no-style` keeps GDAL's default (thin black, no fill).
+- Numbers with decimal places are written as MapInfo Float. (MapInfo's
+  Decimal is at most 20 characters wide, so e.g. an area with 15 decimals
+  would only fit 4 digits before the point and the conversion failed.)
+- If any records can't be converted, it is reported as a failure, with
+  GDAL's own message, and the incomplete table is named in the log.
 - Attribute columns are kept as they are; the record count is checked
   against the shapefile.
 - Needs GDAL, found the same way as stage 2 (ogr2ogr, osgeo, or pyogrio). If
@@ -119,6 +124,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.0.1 | Shapefile to TAB: fields with many decimal places (e.g. `area`, `perimeter`) are written as Float instead of failing; GDAL's real error message shown in the log; a table with missing records is reported as a failure |
 | 1.0.0 | Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon, `os_shapefile_tool.ico`); OpenStreetMap preview in British National Grid as in the OS Point Tool; Settings moved to their own tab; results go straight into the output folder, with an optional site subfolder; input shapefile(s) copied to the output as MapInfo TAB |
 
 ## Still to do

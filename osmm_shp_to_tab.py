@@ -13,6 +13,9 @@ The output opens in MapInfo Professional 8.5:
   * Uses the same GDAL settings as stage 2 (EPSG:27700, BNG bounds, CP1252).
   * Large-integer fields (10+ digit numbers), which 8.5 cannot open, are
     written as Decimal.
+  * Numbers with decimal places are written as Float. MapInfo's Decimal is
+    at most 20 characters wide, so e.g. an area stored with 15 decimals
+    would only fit 4 digits before the point and the conversion would fail.
   * The header is checked and fixed with stage 2's make_mapinfo85_safe().
 
 Styling (unless --no-style): red 2 px outline with no fill for polygons,
@@ -26,6 +29,7 @@ Python module, then the copy of GDAL bundled with pyogrio.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import shutil
 import struct
 import subprocess
@@ -71,6 +75,12 @@ def shape_type(shp: Path) -> int:
 
 def dbf_info(shp: Path):
     """(record count, [field names]) from the .dbf header."""
+    count, fields = dbf_fields(shp)
+    return count, [f[0] for f in fields]
+
+
+def dbf_fields(shp: Path):
+    """(record count, [(name, type letter, width, decimals), ...])."""
     dbf = _sidecar(shp, ".dbf")
     if dbf is None:
         raise ValueError("the .dbf file is missing")
@@ -78,13 +88,14 @@ def dbf_info(shp: Path):
         head = fh.read(32)
         count = struct.unpack_from("<I", head, 4)[0]
         header_len = struct.unpack_from("<H", head, 8)[0]
-        names = []
+        fields = []
         while fh.tell() < header_len - 1:
             desc = fh.read(32)
             if not desc or desc[0] == 0x0D:
                 break
-            names.append(desc[:11].split(b"\0")[0].decode("latin-1").strip())
-    return count, names
+            name = desc[:11].split(b"\0")[0].decode("latin-1").strip()
+            fields.append((name, chr(desc[11]).upper(), desc[16], desc[17]))
+    return count, fields
 
 
 def tab_record_count(tab: Path):
@@ -130,13 +141,17 @@ def get_translator(log=print):
         reasons.append(f"osgeo: {exc}")
     try:
         translate = stage2._bundled_gdal()
+        catcher = _gdal_message_catcher(translate)
 
         def run(args, src, dst):
             # The bundled route reads its options from stage 2's list.
             saved = stage2._GDAL_ARGS
             stage2._GDAL_ARGS = list(args)
             try:
-                return translate(src, dst), translate.last_error
+                with catcher as msgs:
+                    ok = translate(src, dst)
+                err = "; ".join(dict.fromkeys(msgs)) or translate.last_error
+                return ok, err
             finally:
                 stage2._GDAL_ARGS = saved
         return "pyogrio's GDAL", run
@@ -147,20 +162,66 @@ def get_translator(log=print):
     return None, None
 
 
+class _gdal_message_catcher:
+    """Collects GDAL's error messages while a translation runs, for the
+    bundled-GDAL route (otherwise they are lost and we can only say
+    "unknown GDAL error")."""
+    HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_int, ctypes.c_char_p)
+
+    def __init__(self, translate):
+        self.msgs = []
+        self.lib = None
+        try:
+            self.lib = ctypes.CDLL(translate.gdal_lib)
+            self.lib.CPLPushErrorHandler.argtypes = [self.HANDLER]
+            self.lib.CPLPushErrorHandler.restype = None
+            self.lib.CPLPopErrorHandler.restype = None
+        except Exception:                     # noqa: BLE001
+            self.lib = None
+
+        def handler(err_class, _num, msg):
+            if err_class >= 3 and msg:        # CE_Failure / CE_Fatal
+                self.msgs.append(msg.decode("utf-8", "replace").strip())
+        self.handler = self.HANDLER(handler)  # keep a reference
+
+    def __enter__(self):
+        self.msgs = []
+        if self.lib:
+            self.lib.CPLPushErrorHandler(self.handler)
+        return self.msgs
+
+    def __exit__(self, *exc):
+        if self.lib:
+            self.lib.CPLPopErrorHandler()
+        return False
+
+
+def _q(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
 def build_args(shp: Path, style=True):
+    """GDAL options for one shapefile. Columns are listed explicitly so that
+    numbers with decimals can be written as Float (see the top of the file),
+    and, when styling, so a temporary OGR_STYLE column can carry the style
+    and then be dropped again."""
     args = list(stage2._GDAL_ARGS) + EXTRA_ARGS
-    if not style:
+    _count, fields = dbf_fields(shp)
+    kind = SHAPE_KIND.get(shape_type(shp)) if style else None
+    cols = []
+    for name, ftype, _width, decimals in fields:
+        if ftype in "NF" and decimals > 0:
+            cols.append(f"CAST({_q(name)} AS float) AS {_q(name)}")
+        else:
+            cols.append(_q(name))
+    if kind:
+        css = STYLES[kind].replace("'", "''")
+        cols.append(f"CAST('{css}' AS character(120)) AS OGR_STYLE")
+    if not cols:
         return args
-    kind = SHAPE_KIND.get(shape_type(shp))
-    if not kind:
-        return args
-    _count, fields = dbf_info(shp)
-    layer = shp.stem.replace('"', '""')
-    css = STYLES[kind].replace("'", "''")
-    args += ["-sql", f"SELECT *, CAST('{css}' AS character(120)) AS OGR_STYLE "
-                     f'FROM "{layer}"']
-    if fields:      # keep the original columns only (drop OGR_STYLE)
-        args += ["-select", ",".join(fields)]
+    args += ["-sql", f"SELECT {', '.join(cols)} FROM {_q(shp.stem)}"]
+    if kind and fields:     # keep the original columns only (drop OGR_STYLE)
+        args += ["-select", ",".join(f[0] for f in fields)]
     return args
 
 
@@ -203,10 +264,15 @@ def convert_shapefiles(shapefiles, output, style=True, log=print):
                 raise RuntimeError("table needs a newer MapInfo than 8.5 "
                                    "(unsupported field type)")
             got = tab_record_count(dst)
-            note = "" if got in (None, expected) else \
-                f"  WARNING: {expected} records in, {got} out"
+            if got is not None and got != expected:
+                # GDAL skipped some records: keep the partial table, but
+                # report it as a failure (with GDAL's reason) so it's noticed.
+                raise RuntimeError(
+                    f"only {got} of {expected} records were converted "
+                    f"({dst.name} is incomplete)"
+                    + (f". GDAL said: {err}" if err else ""))
             log(f"  {src.name} -> {dst.name}  ({got if got is not None else '?'} "
-                f"objects){note}")
+                f"objects)")
         except Exception as exc:              # noqa: BLE001
             failed += 1
             log(f"  ERROR converting {src.name}: {exc}")

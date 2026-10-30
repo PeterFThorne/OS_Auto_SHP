@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-osmm_gui_v2.py - OS MasterMap Site Builder (v2: shapefile-driven).
+osmm_gui_v2.py - OS Shapefile Tool (v2 of the site builder: shapefile-driven).
 
 A separate desktop front end for the same OS MasterMap -> MapInfo pipeline.
 Instead of typing a centre grid reference and box size, you give it one or
@@ -24,6 +24,7 @@ Only standard-library Python is needed (Tkinter ships with Python on
 Windows). Shapefiles are read directly, so GDAL is not needed for this step.
 """
 
+import base64
 import json
 import math
 import os
@@ -34,14 +35,28 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.request
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-APP_TITLE = "OS MasterMap Site Builder v2 (from shapefile)"
+APP_NAME = "OS Shapefile Tool"
+APP_VERSION = "1.0.0"   # bump this each time you change the app; add a line below
+# Version history (newest first) - also listed in README.md
+#   1.0.0  Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon);
+#          OpenStreetMap preview in British National Grid (as the OS Point
+#          Tool); Settings moved to their own tab
+APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
 SETTINGS_NAME = "osmm_gui_v2_settings.json"
+ICON_FILE = "os_shapefile_tool.ico"
+
+# Preview map background - same source and tile cache as the OS Point Tool
+MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+MAP_USER_AGENT = "OSMM-Site-Builder/1.0 (desktop MapInfo pipeline tool)"
+MAP_CACHE = Path(tempfile.gettempdir()) / "osmm_gui_map_tiles"
 
 STAGE1 = "osmm_site_extract.py"
 STAGE2 = "osmm_style_mapinfo.py"
@@ -76,6 +91,32 @@ def app_dir() -> Path:
     if FROZEN:
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def icon_path():
+    """The app icon, wherever it is: bundled inside the .exe, next to the
+    .exe, or next to this script. None if it can't be found."""
+    places = [app_dir()]
+    if getattr(sys, "_MEIPASS", None):
+        places.insert(0, Path(sys._MEIPASS))
+    for folder in places:
+        candidate = folder / ICON_FILE
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def set_windows_app_id():
+    """Give the app its own taskbar identity on Windows, so the taskbar shows
+    our icon rather than Python's when run as a .py file."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            f"OSMM.OSShapefileTool.{APP_VERSION}")
+    except Exception:
+        pass
 
 
 def script_command(script: Path, args):
@@ -276,6 +317,77 @@ def find_shapefiles(folder: Path):
 
 
 # --------------------------------------------------------------------------
+# British National Grid -> WGS84 lat/lon, and Web Mercator (for the map).
+# Same as the OS Point Tool. Accurate to a few metres: plenty for a preview.
+# --------------------------------------------------------------------------
+
+def bng_to_wgs84(E, N):
+    a, b = 6377563.396, 6356256.909          # Airy 1830
+    F0 = 0.9996012717
+    lat0, lon0 = math.radians(49), math.radians(-2)
+    N0, E0 = -100000.0, 400000.0
+    e2 = 1 - (b * b) / (a * a)
+    n = (a - b) / (a + b)
+
+    lat, M = lat0, 0.0
+    while True:
+        lat = (N - N0 - M) / (a * F0) + lat
+        Ma = (1 + n + 5 / 4 * n ** 2 + 5 / 4 * n ** 3) * (lat - lat0)
+        Mb = (3 * n + 3 * n ** 2 + 21 / 8 * n ** 3) * math.sin(lat - lat0) * math.cos(lat + lat0)
+        Mc = (15 / 8 * n ** 2 + 15 / 8 * n ** 3) * math.sin(2 * (lat - lat0)) * math.cos(2 * (lat + lat0))
+        Md = 35 / 24 * n ** 3 * math.sin(3 * (lat - lat0)) * math.cos(3 * (lat + lat0))
+        M = b * F0 * (Ma - Mb + Mc - Md)
+        if abs(N - N0 - M) < 0.00001:
+            break
+
+    sl, cl, tl = math.sin(lat), math.cos(lat), math.tan(lat)
+    nu = a * F0 / math.sqrt(1 - e2 * sl * sl)
+    rho = a * F0 * (1 - e2) / (1 - e2 * sl * sl) ** 1.5
+    eta2 = nu / rho - 1
+    VII = tl / (2 * rho * nu)
+    VIII = tl / (24 * rho * nu ** 3) * (5 + 3 * tl ** 2 + eta2 - 9 * tl ** 2 * eta2)
+    IX = tl / (720 * rho * nu ** 5) * (61 + 90 * tl ** 2 + 45 * tl ** 4)
+    X = 1 / (cl * nu)
+    XI = 1 / (cl * 6 * nu ** 3) * (nu / rho + 2 * tl ** 2)
+    XII = 1 / (cl * 120 * nu ** 5) * (5 + 28 * tl ** 2 + 24 * tl ** 4)
+    XIIA = 1 / (cl * 5040 * nu ** 7) * (61 + 662 * tl ** 2 + 1320 * tl ** 4 + 720 * tl ** 6)
+    dE = E - E0
+    lat = lat - VII * dE ** 2 + VIII * dE ** 4 - IX * dE ** 6
+    lon = lon0 + X * dE - XI * dE ** 3 + XII * dE ** 5 - XIIA * dE ** 7
+
+    # OSGB36 -> WGS84 (Helmert)
+    sl, cl = math.sin(lat), math.cos(lat)
+    nu = a / math.sqrt(1 - e2 * sl * sl)
+    x1 = nu * cl * math.cos(lon)
+    y1 = nu * cl * math.sin(lon)
+    z1 = (1 - e2) * nu * sl
+    tx, ty, tz = 446.448, -125.157, 542.060
+    s = 20.4894e-6
+    rx, ry, rz = (math.radians(v / 3600) for v in (0.1502, 0.2470, 0.8421))
+    x2 = tx + (1 + s) * x1 - rz * y1 + ry * z1
+    y2 = ty + rz * x1 + (1 + s) * y1 - rx * z1
+    z2 = tz - ry * x1 + rx * y1 + (1 + s) * z1
+
+    a2, b2 = 6378137.0, 6356752.3141          # WGS84
+    e22 = 1 - (b2 * b2) / (a2 * a2)
+    p = math.hypot(x2, y2)
+    lat = math.atan2(z2, p * (1 - e22))
+    for _ in range(10):
+        nu = a2 / math.sqrt(1 - e22 * math.sin(lat) ** 2)
+        lat = math.atan2(z2 + e22 * nu * math.sin(lat), p)
+    return math.degrees(lat), math.degrees(math.atan2(y2, x2))
+
+
+def mercator_px(lat, lon, zoom):
+    """World pixel position of lat/lon on the standard 256 px web-map tiles."""
+    size = 256 * (2 ** zoom)
+    x = (lon + 180.0) / 360.0 * size
+    r = math.radians(lat)
+    y = (1 - math.log(math.tan(r) + 1 / math.cos(r)) / math.pi) / 2 * size
+    return x, y
+
+
+# --------------------------------------------------------------------------
 # GUI
 # --------------------------------------------------------------------------
 
@@ -283,8 +395,9 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1020x780")
-        self.minsize(900, 680)
+        self._set_icon()
+        self.geometry("1040x860")
+        self.minsize(920, 720)
 
         self.settings_path = app_dir() / SETTINGS_NAME
         self.settings = dict(DEFAULTS)
@@ -295,6 +408,17 @@ class App(tk.Tk):
         self.proc = None
         self.stop_flag = threading.Event()
         self.msgq = queue.Queue()
+
+        # map background state (as the OS Point Tool)
+        self.map_imgs = {}            # (z, x, y) -> decoded tile pixels
+        self.map_failed = set()       # tiles that couldn't be fetched
+        self.map_pending = set()
+        self.map_req_q = queue.Queue()
+        self.map_res_q = queue.Queue()
+        self.map_offline_until = 0.0
+        self.map_gen = 0
+        self.map_redraw_job = None
+        threading.Thread(target=self._map_fetcher, daemon=True).start()
 
         self.vars = {}
         for key in ("buffer_m", "output_root", "site_name", "data_root",
@@ -308,6 +432,7 @@ class App(tk.Tk):
         if not self.vars["scripts_dir"].get():
             self.vars["scripts_dir"].set(str(app_dir()))
 
+        self._build_styles()
         self._build()
         # Inputs deliberately start empty each session, so a previous job's
         # shapefiles can't be extracted by mistake.
@@ -321,7 +446,28 @@ class App(tk.Tk):
             "write", lambda *_: self._toggle_output())
         self._toggle_output()
         self.after(100, self._drain)
+        self.after(150, self._drain_map)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _set_icon(self):
+        """Window/taskbar icon. default= makes pop-up windows use it too.
+        A missing or unreadable icon is never fatal."""
+        icon = icon_path()
+        if icon is None:
+            return
+        try:
+            self.iconbitmap(default=str(icon))
+        except tk.TclError:
+            pass
+
+    def _build_styles(self):
+        st = ttk.Style(self)
+        if "vista" in st.theme_names():
+            st.theme_use("vista")
+        st.configure("Title.TLabel", font=("Segoe UI", 14, "bold"))
+        st.configure("Hint.TLabel", foreground="#666666")
+        st.configure("Run.TButton", font=("Segoe UI", 10, "bold"),
+                     padding=(14, 6))
 
     # ----- settings -------------------------------------------------------
     def _load_settings(self):
@@ -346,7 +492,24 @@ class App(tk.Tk):
         outer = ttk.Frame(self)
         outer.pack(fill="both", expand=True)
 
-        top = ttk.Frame(outer)
+        head = ttk.Frame(outer, padding=(12, 10, 12, 0))
+        head.pack(fill="x")
+        ttk.Label(head, text=APP_NAME, style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="Shapefile \u2192 OS MasterMap \u2192 styled "
+                  "MapInfo 8.5 tables", style="Hint.TLabel")\
+            .pack(side="left", padx=12)
+
+        # Site tab = everyday use; Settings tab = set once, hidden until
+        # clicked, which leaves room for a bigger preview map.
+        self.tabs = ttk.Notebook(outer)
+        self.tabs.pack(fill="both", expand=True, padx=8, pady=(8, 2))
+        site_tab = ttk.Frame(self.tabs)
+        settings_tab = ttk.Frame(self.tabs)
+        self.tabs.add(site_tab, text="  Site  ")
+        self.tabs.add(settings_tab, text="  Settings  ")
+        self.settings_tab = settings_tab
+
+        top = ttk.Frame(site_tab)
         top.pack(fill="x", **pad)
         top.columnconfigure(0, weight=3)
         top.columnconfigure(1, weight=2)
@@ -422,22 +585,22 @@ class App(tk.Tk):
                   pady=(2, 6))
 
         # --- Extent + preview ---------------------------------------------
-        mid = ttk.LabelFrame(outer, text="3. Site extent")
+        mid = ttk.LabelFrame(site_tab, text="3. Site extent")
         mid.pack(fill="both", expand=True, **pad)
         mid.columnconfigure(0, weight=1)
         mid.rowconfigure(0, weight=1)
-        self.canvas = tk.Canvas(mid, background="white", height=240,
+        self.canvas = tk.Canvas(mid, background=self.MAP_BG, height=400,
                                 highlightthickness=1,
                                 highlightbackground="#ccc")
         self.canvas.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-        self.canvas.bind("<Configure>", lambda e: self._draw())
+        self.canvas.bind("<Configure>", lambda e: self._schedule_redraw())
         self.extent_lbl = ttk.Label(mid, text="", justify="left",
                                     font=("Consolas", 9))
         self.extent_lbl.grid(row=0, column=1, sticky="nw", padx=6, pady=6)
 
         # --- Advanced -----------------------------------------------------
-        adv = ttk.LabelFrame(outer, text="Settings")
-        adv.pack(fill="x", **pad)
+        adv = ttk.LabelFrame(settings_tab, text="Folders and data")
+        adv.pack(fill="x", padx=8, pady=8)
         adv.columnconfigure(1, weight=1)
         for r, (label, key) in enumerate((
                 ("OS data (.gz tiles):", "data_root"),
@@ -453,11 +616,16 @@ class App(tk.Tk):
                         "are added to the data folder)",
                         variable=self.vars["reindex"])\
             .grid(row=2, column=1, sticky="w", pady=(0, 4))
+        ttk.Label(settings_tab, foreground="#666", justify="left", text=(
+            "These are remembered between sessions, so they normally only "
+            "need setting once on each PC.\n"
+            f"{APP_NAME} v{APP_VERSION}")).pack(anchor="w", padx=14)
 
         # --- Run + log ----------------------------------------------------
         bar = ttk.Frame(outer)
         bar.pack(fill="x", **pad)
-        self.run_btn = ttk.Button(bar, text="Run", command=self._run)
+        self.run_btn = ttk.Button(bar, text="Run", style="Run.TButton",
+                                  command=self._run)
         self.run_btn.pack(side="left")
         self.stop_btn = ttk.Button(bar, text="Stop", command=self._stop,
                                    state="disabled")
@@ -466,8 +634,8 @@ class App(tk.Tk):
         self.status.pack(side="left", padx=12)
 
         logf = ttk.Frame(outer)
-        logf.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        self.log = tk.Text(logf, height=10, wrap="word",
+        logf.pack(fill="x", padx=8, pady=(0, 8))
+        self.log = tk.Text(logf, height=8, wrap="word",
                            font=("Consolas", 9))
         sb = ttk.Scrollbar(logf, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
@@ -478,6 +646,14 @@ class App(tk.Tk):
         self.log.tag_configure("head", foreground="#0b4f9c",
                                font=("Consolas", 9, "bold"))
         self.log.tag_configure("warn", foreground="#a15c00")
+
+        # The Run bar and log keep their size; the tabs (and the map) get
+        # whatever space is left. Pack order decides this, so re-pack.
+        for w in (self.tabs, bar, logf):
+            w.pack_forget()
+        logf.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
+        bar.pack(side="bottom", fill="x", **pad)
+        self.tabs.pack(fill="both", expand=True, padx=8, pady=(8, 2))
 
     # ----- inputs ---------------------------------------------------------
     def _pick_files(self):
@@ -631,7 +807,13 @@ class App(tk.Tk):
         self.extent_lbl.configure(text="\n".join(lines))
         self._draw(jobs)
 
+    PREVIEW_MARGIN = 1.25    # view = site box(es) x this
+    PREVIEW_MIN_SPAN = 600   # metres - so tiny sites still show some context
+    MAP_BG = "#f4f7ef"
+
     def _draw(self, jobs=None):
+        """Preview in British National Grid on an OpenStreetMap background,
+        drawn the same way as the OS Point Tool, with the shapefile on top."""
         if jobs is None:
             try:
                 jobs = self._jobs()
@@ -639,53 +821,253 @@ class App(tk.Tk):
                 jobs = []
         c = self.canvas
         c.delete("all")
-        w, h = c.winfo_width(), c.winfo_height()
-        if not jobs or w < 20 or h < 20:
-            c.create_text(w / 2, h / 2, fill="#888",
-                          text="Add shapefile(s) to see the site extent")
+        self.map_gen += 1
+        if self.map_failed and time.time() >= self.map_offline_until:
+            self.map_failed.clear()       # retry tiles that failed earlier
+        cw, ch = int(c.winfo_width()), int(c.winfo_height())
+        if cw < 40 or ch < 40:
             return
-        all_box = union_bbox(j["box"] for j in jobs)
-        tiles = {t: (e, n) for j in jobs for t, e, n in tiles_for_box(j["box"])}
-        # Zoom to the extraction box(es) with a margin; tiles show as a grid.
-        bx0, by0, bx1, by1 = all_box
-        mx = max(bx1 - bx0, by1 - by0) * 0.12 + 50
-        vx0, vy0, vx1, vy1 = bx0 - mx, by0 - mx, bx1 + mx, by1 + mx
-        m = 14
-        s = min((w - 2 * m) / max(vx1 - vx0, 1), (h - 2 * m) / max(vy1 - vy0, 1))
-        ox = (w - (vx1 - vx0) * s) / 2
-        oy = (h - (vy1 - vy0) * s) / 2
+        if not jobs:
+            c.create_text(cw / 2, ch / 2, fill="#777777",
+                          font=("Segoe UI", 10),
+                          text="Add shapefile(s) to see the site on the map")
+            return
 
-        def tx(x, y):
-            return ox + (x - vx0) * s, h - (oy + (y - vy0) * s)
+        bx0, by0, bx1, by1 = union_bbox(j["box"] for j in jobs)
+        e, n = (bx0 + bx1) / 2, (by0 + by1) / 2
+        pad = 10
+        span_w = max((bx1 - bx0) * self.PREVIEW_MARGIN, self.PREVIEW_MIN_SPAN)
+        span_h = max((by1 - by0) * self.PREVIEW_MARGIN, self.PREVIEW_MIN_SPAN)
+        scale = max(span_w / (cw - 2 * pad), span_h / (ch - 2 * pad))
+        X0, Y1 = e - cw / 2 * scale, n + ch / 2 * scale   # BNG at top-left
 
-        for t, (e, n) in tiles.items():
-            a, b = tx(e, n + TILE_M)
-            cc, d = tx(e + TILE_M, n)
-            c.create_rectangle(a, b, cc, d, outline="#b5b5b5", fill="#f6f6f6")
-            lx, ly = max(a, 2), max(b, 2)
-            c.create_text(lx + 4, ly + 3, anchor="nw", text=t, fill="#999",
-                          font=("Segoe UI", 8))
+        def px(x, y):
+            return (x - X0) / scale, (Y1 - y) / scale
+
+        # --- map background, re-projected from web-map tiles into OSGB ---
+        have_map, missing = self._draw_map(c, X0, Y1, scale, cw, ch)
+        if missing:
+            gen = self.map_gen
+            self.after(350, lambda: self._request_tiles(missing, gen))
+
+        # --- 5 km OS tiles (labelled where they show) ---
+        tiles = {t: (te, tn) for j in jobs for t, te, tn in tiles_for_box(j["box"])}
+        line = "#3d5a2a" if have_map else "#9bb08a"
+        for name, (x, y) in tiles.items():
+            a, b = px(x, y + TILE_M)
+            cc, d = px(x + TILE_M, y)
+            if have_map:
+                c.create_rectangle(a, b, cc, d, outline=line, width=1)
+            else:
+                c.create_rectangle(a, b, cc, d, outline=line, fill="#e3ecd6")
+            va, vb = max(a, 0), max(b, 0)
+            vc, vd = min(cc, cw), min(d, ch)
+            if vc - va < 40 or vd - vb < 16:
+                continue
+            tx_, ty_ = va + 4, vb + 3
+            if have_map:
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    c.create_text(tx_ + dx, ty_ + dy, text=name, anchor="nw",
+                                  fill="white", font=("Segoe UI", 8, "bold"))
+            c.create_text(tx_, ty_, text=name, anchor="nw",
+                          fill="#2f4a1f" if have_map else "#5c6e4c",
+                          font=("Segoe UI", 8, "bold" if have_map else "normal"))
+
+        # --- extraction box(es): same style as the OS Point Tool site box ---
         for j in jobs:
             x0, y0, x1, y1 = j["box"]
-            a, b = tx(x0, y1)
-            cc, d = tx(x1, y0)
-            c.create_rectangle(a, b, cc, d, outline="#d33", dash=(4, 3),
-                               width=2)
+            a, b = px(x0, y1)
+            cc, d = px(x1, y0)
+            c.create_rectangle(a, b, cc, d, outline="#d9480f", width=2,
+                               fill="#ffc8a0",
+                               stipple="gray25" if have_map else "gray50")
+
+        # --- the shapefile(s) on top ---
+        blue = "#1240a8"
+        for j in jobs:
             for k in j["files"]:
                 shp = self.shapes[k]
                 for part in shp["parts"]:
                     step = max(1, len(part) // 2000)
-                    pts = [v for x, y in part[::step] for v in tx(x, y)]
+                    pts = [v for x, y in part[::step] for v in px(x, y)]
                     if len(pts) >= 4:
-                        c.create_line(*pts, fill="#1f5fbf", width=1.5)
+                        c.create_line(*pts, fill="white", width=4)
+                        c.create_line(*pts, fill=blue, width=2)
                 for x, y in shp["points"][:5000]:
-                    px, py = tx(x, y)
-                    c.create_oval(px - 2, py - 2, px + 2, py + 2,
-                                  fill="#1f5fbf", outline="")
-        c.create_text(w - 6, h - 4, anchor="se", fill="#666",
-                      font=("Segoe UI", 8),
-                      text="blue = shapefile   red dashed = extraction box   "
-                           "grey = 5 km OS tiles")
+                    qx, qy = px(x, y)
+                    c.create_oval(qx - 4, qy - 4, qx + 4, qy + 4, fill=blue,
+                                  outline="white", width=1.5)
+
+        # --- key, attribution / status ---
+        key = c.create_text(6, ch - 3, anchor="sw", font=("Segoe UI", 8),
+                            fill="#222222",
+                            text="Blue: shapefile    Orange: area extracted "
+                                 f"(+{self._buffer() or 0:g} m)    Green: 5 km OS tiles")
+        c.create_rectangle(*c.bbox(key), fill="white", outline="",
+                           stipple="gray75")
+        c.tag_raise(key)
+        if have_map:
+            t = c.create_text(cw - 3, ch - 2, anchor="se",
+                              text="\u00a9 OpenStreetMap contributors",
+                              font=("Segoe UI", 7), fill="#333333")
+            c.create_rectangle(*c.bbox(t), fill="white", outline="",
+                               stipple="gray75")
+            c.tag_raise(t)
+        elif time.time() < self.map_offline_until or (self.map_failed and not missing):
+            c.create_text(cw - 3, ch - 2, anchor="se",
+                          text="Map unavailable (no internet?)",
+                          font=("Segoe UI", 7), fill="#777777")
+
+    def _draw_map(self, c, X0, Y1, scale, cw, ch):
+        """Re-project web-map tiles into the OSGB preview (as the OS Point
+        Tool). Returns (drawn, missing_tile_keys)."""
+        lat_c, _ = bng_to_wgs84(X0 + cw / 2 * scale, Y1 - ch / 2 * scale)
+        res0 = 156543.03392 * math.cos(math.radians(lat_c))     # m/px at zoom 0
+        zoom = max(0, min(19, math.ceil(math.log2(res0 / scale) - 0.1)))
+
+        # Exact conversion on a coarse grid, interpolated in between.
+        step = 16
+        gx = list(range(0, cw + step, step))
+        gy = list(range(0, ch + step, step))
+        grid = [[mercator_px(*bng_to_wgs84(X0 + x * scale, Y1 - y * scale), zoom)
+                 for x in gx] for y in gy]
+
+        xs = [p[0] for row in grid for p in row]
+        ys = [p[1] for row in grid for p in row]
+        need = [(zoom, tx, ty)
+                for ty in range(int(min(ys) // 256), int(max(ys) // 256) + 1)
+                for tx in range(int(min(xs) // 256), int(max(xs) // 256) + 1)]
+        missing = [k_ for k_ in need
+                   if k_ not in self.map_imgs and k_ not in self.map_failed]
+        have = {(k_[1], k_[2]): self.map_imgs[k_] for k_ in need
+                if k_ in self.map_imgs}
+        if not have:
+            return False, missing
+
+        cache_key = (zoom, round(X0, 3), round(Y1, 3), round(scale, 6), cw, ch,
+                     tuple(sorted(have)))
+        if getattr(self, "_map_cache_key", None) != cache_key:
+            bg = self.MAP_BG
+            rows = []
+            for y in range(ch):
+                gi = min(y // step, len(gy) - 2)
+                fy = (y - gy[gi]) / step
+                top, bot = grid[gi], grid[gi + 1]
+                row = []
+                for gj in range(len(gx) - 1):
+                    x_start = gx[gj]
+                    if x_start >= cw:
+                        break
+                    (ax, ay), (bx, by) = top[gj], top[gj + 1]
+                    (cx_, cy_), (dx, dy) = bot[gj], bot[gj + 1]
+                    lx = ax + (cx_ - ax) * fy
+                    ly = ay + (cy_ - ay) * fy
+                    rx = bx + (dx - bx) * fy
+                    ry = by + (dy - by) * fy
+                    sx = (rx - lx) / step
+                    sy = (ry - ly) / step
+                    for i in range(min(step, cw - x_start)):
+                        X = lx + sx * i
+                        Y = ly + sy * i
+                        tile = have.get((int(X) >> 8, int(Y) >> 8))
+                        row.append(tile[int(Y) & 255][int(X) & 255] if tile else bg)
+                rows.append("{" + " ".join(row) + "}")
+            img = tk.PhotoImage(width=cw, height=ch)
+            img.put(" ".join(rows))
+            self._map_photo = img
+            self._map_cache_key = cache_key
+        c.create_image(0, 0, image=self._map_photo, anchor="nw")
+        return True, missing
+
+    # ----- map tiles (background thread), as the OS Point Tool ------------
+    def _request_tiles(self, keys, gen):
+        if gen != self.map_gen:          # inputs changed since - skip stale requests
+            return
+        if time.time() < self.map_offline_until:
+            for key in keys:
+                self.map_failed.add(key)
+            self._schedule_redraw()
+            return
+        for key in keys:
+            if key not in self.map_pending and key not in self.map_imgs:
+                self.map_pending.add(key)
+                self.map_req_q.put(key)
+
+    def _map_fetcher(self):
+        while True:
+            key = self.map_req_q.get()
+            z, x, y = key
+            path = MAP_CACHE / str(z) / str(x) / f"{y}.png"
+            data = None
+            try:
+                if path.exists():
+                    data = path.read_bytes()
+                else:
+                    req = urllib.request.Request(
+                        MAP_TILE_URL.format(z=z, x=x, y=y),
+                        headers={"User-Agent": MAP_USER_AGENT})
+                    with urllib.request.urlopen(req, timeout=8) as r:
+                        data = r.read()
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(data)
+                    except OSError:
+                        pass
+            except Exception:
+                data = None
+            self.map_res_q.put((key, data))
+
+    def _drain_map(self):
+        got = False
+        try:
+            while True:
+                key, data = self.map_res_q.get_nowait()
+                self.map_pending.discard(key)
+                pixels = None
+                if data:
+                    try:
+                        pixels = self._decode_tile(data)
+                    except Exception:
+                        pixels = None
+                if pixels is not None:
+                    self.map_imgs[key] = pixels
+                else:
+                    self.map_failed.add(key)
+                    self.map_offline_until = time.time() + 60
+                got = True
+        except queue.Empty:
+            pass
+        if len(self.map_imgs) > 120:       # keep memory in check
+            for k_ in list(self.map_imgs)[:40]:
+                del self.map_imgs[k_]
+        if got:
+            self._schedule_redraw()
+        self.after(150, self._drain_map)
+
+    _colour_pool = {}
+
+    def _decode_tile(self, data):
+        """PNG bytes -> 256 rows of '#rrggbb' strings (via Tk, no extra packages)."""
+        img = tk.PhotoImage(data=base64.b64encode(data).decode("ascii"),
+                            format="png")
+        pool = self._colour_pool
+        split = self.tk.splitlist
+        rows = []
+        for row in split(self.tk.call(img.name, "data")):
+            rows.append(tuple(pool.setdefault(v, v) for v in split(row)))
+        del img
+        if len(rows) != 256 or len(rows[0]) != 256:
+            return None
+        return tuple(rows)
+
+    def _schedule_redraw(self):
+        if self.map_redraw_job:
+            self.after_cancel(self.map_redraw_job)
+
+        def redraw():
+            self.map_redraw_job = None
+            self._draw()
+        self.map_redraw_job = self.after(60, redraw)
 
     # ----- running --------------------------------------------------------
     def _log(self, text, tag=None):
@@ -727,16 +1109,19 @@ class App(tk.Tk):
         for s in need:
             if not (sdir / s).exists():
                 raise ValueError(f"Can't find {s} in {sdir}. Set 'Pipeline "
-                                 "scripts' in Settings.")
+                                 "scripts' on the Settings tab.")
         data = self.vars["data_root"].get().strip()
         if not data or not Path(data).exists():
-            raise ValueError(f"OS data folder not found: {data or '(blank)'}")
+            raise ValueError(f"OS data folder not found: {data or '(blank)'}\n"
+                             "Set it on the Settings tab.")
         return jobs
 
     def _run(self):
         try:
             jobs = self._validate()
         except ValueError as e:
+            if "Settings tab" in str(e):
+                self.tabs.select(self.settings_tab)
             messagebox.showerror(APP_TITLE, str(e))
             return
         big = [j["name"] for j in jobs
@@ -932,6 +1317,7 @@ def main():
         sys.path.insert(0, str(Path(script).parent))
         runpy.run_path(script, run_name="__main__")
         return
+    set_windows_app_id()
     App().mainloop()
 
 

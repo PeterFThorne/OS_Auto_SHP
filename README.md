@@ -1,4 +1,6 @@
-# OS MasterMap Site Builder v2 (shapefile-driven)
+# OS Shapefile Tool
+
+Version 1.0.0. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -16,7 +18,8 @@ Working folder: `E:\Maps\ZZ_AI_Testing\OS_Auto_SHP`
 
 ```
 OS_Auto_SHP\
-    osmm_gui_v2.py           (this app)
+    osmm_gui_v2.py           (this app: OS Shapefile Tool)
+    os_shapefile_tool.ico    (app icon; the app still runs without it)
     osmm_site_extract.py     (stage 1, copied from OS_Automation)
     osmm_style_mapinfo.py    (stage 2, copied from OS_Automation)
     osmm_shp_to_tab.py       (input shapefile(s) -> MapInfo TAB)
@@ -27,6 +30,14 @@ Changes to the stage scripts here don't affect v1, and vice versa.
 
 Run `python osmm_gui_v2.py` (or double-click it). Standard-library Python
 only; no GDAL is needed to read the shapefiles.
+
+The window has two tabs:
+
+- **Site**: inputs, output options and the preview map. This is all you
+  normally need.
+- **Settings**: OS data folder, pipeline scripts folder and *Rebuild tile
+  index*. These are remembered, so they usually only need setting once per
+  PC. If one is wrong when you press Run, the app switches to this tab.
 
 ## Using it
 
@@ -45,14 +56,17 @@ only; no GDAL is needed to read the shapefiles.
    If several per-shapefile sites would land in the same folder, they get
    subfolders anyway, as their MM_* tables would otherwise overwrite each other.
 6. **Style into MM_* tables (stage 2)**: ticked by default.
-   **Copy input shapefile(s) to the site folder as MapInfo TAB**: ticked by
+   **Copy input shapefile(s) to the output folder as MapInfo TAB**: ticked by
    default (see below).
 7. **PDF/JPG map**: visible but disabled until that feature is built.
 8. Press **Run**.
 
-The preview shows the shapefile (blue), the extraction box (red dashed) and
-the 5 km OS tiles it needs, with the exact W/S/E/N, size, centre and tile
-list beside it.
+The preview map works like the OS Point Tool's: an OpenStreetMap background
+drawn in British National Grid, the 5 km OS tiles (green, labelled), the
+area that will be extracted (orange, shapefile extent + buffer) and the
+shapefile itself (blue). The exact W/S/E/N, size, centre, tiles and output
+folder are listed beside it. Map tiles are cached in the temp folder (shared
+with the OS Point Tool); with no internet it shows a plain background.
 
 ## What it checks
 
@@ -100,6 +114,12 @@ The box is rounded outwards to whole metres and made an even size, so the
 centre passed to stage 1 is a whole-metre easting/northing. It is then run
 exactly like a v1 job: `--centre E,N --width W --height H`. Stage 1 still
 keeps whole features touching the box (ragged edge), as before.
+
+## Version history
+
+| Version | Changes |
+|---|---|
+| 1.0.0 | Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon, `os_shapefile_tool.ico`); OpenStreetMap preview in British National Grid as in the OS Point Tool; Settings moved to their own tab; results go straight into the output folder, with an optional site subfolder; input shapefile(s) copied to the output as MapInfo TAB |
 
 ## Still to do
 

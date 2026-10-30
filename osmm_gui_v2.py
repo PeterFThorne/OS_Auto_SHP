@@ -30,6 +30,7 @@ import os
 import queue
 import re
 import runpy
+import shutil
 import struct
 import subprocess
 import sys
@@ -48,12 +49,15 @@ SHP2TAB = "osmm_shp_to_tab.py"   # input shapefile(s) -> MapInfo TAB
 
 TILE_M = 5000              # OS MasterMap tiles are 5 km squares (SW corner)
 LARGE_SIDE_M = 20000       # ask before extracting a box bigger than this
+STAGE1_TMP = "_osmm_stage1_tmp"   # stage 1 always writes to <output>/<name>;
+                                  # we use this name, then move the files up
 
 DEFAULTS = {
     "buffer_m": "300",
     "per_file": False,
     "output_root": "",
     "same_as_input": True,
+    "subfolder": False,
     "site_name": "",
     "run_stage2": True,
     "shp_to_tab": True,
@@ -260,6 +264,12 @@ def safe_name(s):
     return s.strip("_") or "site"
 
 
+def short_path(p, limit=34):
+    """Last part of a long path, for the narrow extent panel."""
+    s = str(p)
+    return s if len(s) <= limit else "…" + s[-(limit - 1):]
+
+
 def find_shapefiles(folder: Path):
     return sorted(p for p in folder.iterdir()
                   if p.is_file() and p.suffix.lower() == ".shp")
@@ -290,7 +300,8 @@ class App(tk.Tk):
         for key in ("buffer_m", "output_root", "site_name", "data_root",
                     "scripts_dir"):
             self.vars[key] = tk.StringVar(value=self.settings.get(key, ""))
-        for key in ("per_file", "same_as_input", "run_stage2", "shp_to_tab",
+        for key in ("per_file", "same_as_input", "subfolder", "run_stage2",
+                    "shp_to_tab",
                     "make_map",
                     "open_when_done", "reindex"):
             self.vars[key] = tk.BooleanVar(value=bool(self.settings.get(key)))
@@ -303,7 +314,9 @@ class App(tk.Tk):
         self._refresh()
 
         self.vars["buffer_m"].trace_add("write", lambda *_: self._refresh())
-        self.vars["per_file"].trace_add("write", lambda *_: self._refresh())
+        for key in ("per_file", "subfolder", "same_as_input", "site_name",
+                    "output_root"):
+            self.vars[key].trace_add("write", lambda *_: self._refresh())
         self.vars["same_as_input"].trace_add(
             "write", lambda *_: self._toggle_output())
         self._toggle_output()
@@ -320,7 +333,6 @@ class App(tk.Tk):
 
     def _save_settings(self):
         s = {k: v.get() for k, v in self.vars.items()}
-        s.pop("site_name", None)
         s["last_dir"] = self.settings.get("last_dir", "")
         try:
             self.settings_path.write_text(json.dumps(s, indent=2),
@@ -383,29 +395,30 @@ class App(tk.Tk):
                         variable=self.vars["same_as_input"])\
             .grid(row=1, column=1, columnspan=2, sticky="w")
 
-        ttk.Label(out, text="Site name:").grid(row=2, column=0, sticky="w",
+        ttk.Checkbutton(out, text="Create a subfolder for the site",
+                        variable=self.vars["subfolder"])\
+            .grid(row=2, column=1, columnspan=2, sticky="w")
+        ttk.Label(out, text="Site name:").grid(row=3, column=0, sticky="w",
                                                padx=6, pady=2)
         self.name_entry = ttk.Entry(out, textvariable=self.vars["site_name"])
-        self.name_entry.grid(row=2, column=1, columnspan=2, sticky="ew",
+        self.name_entry.grid(row=3, column=1, columnspan=2, sticky="ew",
                              padx=(0, 6), pady=2)
-        self.name_hint = ttk.Label(out, text="", foreground="#666")
-        self.name_hint.grid(row=3, column=1, columnspan=2, sticky="w")
 
         ttk.Checkbutton(out, text="Style into MM_* tables (stage 2)",
                         variable=self.vars["run_stage2"])\
-            .grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=2)
-        ttk.Checkbutton(out, text="Copy input shapefile(s) to the site folder "
+            .grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(out, text="Copy input shapefile(s) to the output folder "
                         "as MapInfo TAB",
                         variable=self.vars["shp_to_tab"])\
-            .grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+            .grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=2)
         cb = ttk.Checkbutton(out, text="PDF/JPG map of shapefile + "
                              "MasterMap (coming later)",
                              variable=self.vars["make_map"])
-        cb.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+        cb.grid(row=7, column=0, columnspan=3, sticky="w", padx=6, pady=2)
         cb.state(["disabled"])
         ttk.Checkbutton(out, text="Open output folder when done",
                         variable=self.vars["open_when_done"])\
-            .grid(row=7, column=0, columnspan=3, sticky="w", padx=6,
+            .grid(row=8, column=0, columnspan=3, sticky="w", padx=6,
                   pady=(2, 6))
 
         # --- Extent + preview ---------------------------------------------
@@ -547,7 +560,11 @@ class App(tk.Tk):
             return None
 
     def _jobs(self):
-        """List of dicts: name, files, box, out_root. Raises ValueError."""
+        """List of dicts: name, files, box, out_root, site_dir.
+        With "Create a subfolder" ticked, results go to out_root/<name>.
+        Otherwise they go straight into out_root, except when one site per
+        shapefile puts several sites in the same folder: their MM_* tables
+        would overwrite each other, so each then gets a subfolder."""
         good = [k for k in self.listbox.get(0, "end") if k in self.shapes]
         if not good:
             raise ValueError("Add at least one valid shapefile.")
@@ -569,21 +586,28 @@ class App(tk.Tk):
         else:
             box = buffered_box(
                 union_bbox(self.shapes[k]["bbox"] for k in good), buf)
-            name = self.vars["site_name"].get().strip()
+            name = self.vars["site_name"].get().strip() \
+                if self.vars["subfolder"].get() else ""
             if not name:
                 name = Path(good[0]).stem if len(good) == 1 else \
                     f"{Path(good[0]).stem}_plus{len(good) - 1}"
             jobs.append({"name": safe_name(name), "files": good,
                          "box": box, "out_root": out_for(good)})
+        shared = {}
+        for j in jobs:
+            key = str(j["out_root"]).lower()
+            shared[key] = shared.get(key, 0) + 1
+        sub = self.vars["subfolder"].get()
+        for j in jobs:
+            j["site_dir"] = j["out_root"] / j["name"] \
+                if sub or shared[str(j["out_root"]).lower()] > 1 \
+                else j["out_root"]
         return jobs
 
     # ----- preview --------------------------------------------------------
     def _refresh(self):
-        per = self.vars["per_file"].get()
-        self.name_entry.configure(state="disabled" if per else "normal")
-        self.name_hint.configure(
-            text="Each site is named after its shapefile." if per else
-            "Blank = named after the shapefile.")
+        named = self.vars["subfolder"].get() and not self.vars["per_file"].get()
+        self.name_entry.configure(state="normal" if named else "disabled")
         try:
             jobs = self._jobs()
         except ValueError as e:
@@ -600,7 +624,8 @@ class App(tk.Tk):
                 f"  S {y0}  N {y1}",
                 f"  {x1 - x0:,} x {y1 - y0:,} m",
                 f"  centre {(x0 + x1) // 2},{(y0 + y1) // 2}",
-                f"  tiles: {', '.join(t for t, _, _ in tiles)}", ""]
+                f"  tiles: {', '.join(t for t, _, _ in tiles)}",
+                f"  output: {short_path(j['site_dir'])}", ""]
         if len(jobs) > 6:
             lines.append(f"… and {len(jobs) - 6} more sites")
         self.extent_lbl.configure(text="\n".join(lines))
@@ -759,32 +784,25 @@ class App(tk.Tk):
         self.proc = None
         return rc, lines
 
-    def _find_site_folder(self, out_root: Path, name: str, started: float,
-                          lines):
-        def has_site(d):
-            return d.is_dir() and any(
-                (d / f).exists() for f in ("site.gml.gz", "site.gml"))
-        for d in (out_root / name, out_root / "sites" / name):
-            if has_site(d):
-                return d
-        for line in reversed(lines):
-            m = re.search(r"([A-Za-z]:\\[^\"']*?|/[^\"']*?)site\.gml(\.gz)?",
-                          line)
-            if m:
-                d = Path(m.group(1))
-                if has_site(d):
-                    return d
-        cands = []
-        for base in (out_root, out_root / "sites"):
-            if base.is_dir():
-                for d in base.iterdir():
-                    if has_site(d):
-                        t = max((d / f).stat().st_mtime
-                                for f in ("site.gml.gz", "site.gml")
-                                if (d / f).exists())
-                        if t >= started - 2:
-                            cands.append((t, d))
-        return max(cands)[1] if cands else None
+    def _lift_stage1_output(self, tmp: Path, site: Path):
+        """Move stage 1's files out of its subfolder into the output folder
+        itself, replacing any from an earlier run, then remove the subfolder."""
+        if not (tmp / "site.gml.gz").exists():
+            if (tmp / "manifest.json").exists():
+                raise RuntimeError("stage 1 found no features in the box "
+                                   "(see manifest / log above)")
+            raise RuntimeError(f"stage 1 output not found in {tmp}")
+        for f in tmp.iterdir():
+            os.replace(f, site / f.name)
+        shutil.rmtree(tmp, ignore_errors=True)
+        man = site / "manifest.json"
+        try:                     # keep the manifest's paths truthful
+            m = json.loads(man.read_text(encoding="utf-8"))
+            m["site"] = site.name
+            m["output"] = str(site / "site.gml.gz")
+            man.write_text(json.dumps(m, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def _worker(self, jobs):
         sdir = Path(self.vars["scripts_dir"].get())
@@ -806,10 +824,14 @@ class App(tk.Tk):
                       f"({x1 - x0} x {y1 - y0} m), centre {cx},{cy}")
             try:
                 out_root.mkdir(parents=True, exist_ok=True)
-                started = time.time()
+                site = j["site_dir"]
+                site.mkdir(parents=True, exist_ok=True)
+                tmp = site / STAGE1_TMP
+                if tmp.exists():
+                    shutil.rmtree(tmp, ignore_errors=True)
                 args = ["--centre", f"{cx},{cy}", "--width", str(x1 - x0),
                         "--height", str(y1 - y0), "--data", data,
-                        "--output", str(out_root), "--name", j["name"]]
+                        "--output", str(site), "--name", STAGE1_TMP]
                 if reindex:
                     args.append("--reindex")
                     reindex = False          # only once per run
@@ -819,11 +841,7 @@ class App(tk.Tk):
                     break
                 if rc != 0:
                     raise RuntimeError(f"stage 1 failed (exit code {rc})")
-                site = self._find_site_folder(out_root, j["name"], started,
-                                              lines)
-                if site is None:
-                    raise RuntimeError("stage 1 finished but its site folder "
-                                       f"couldn't be found under {out_root}")
+                self._lift_stage1_output(tmp, site)
                 self._write_extent_record(site, j, cx, cy)
                 if self.vars["run_stage2"].get():
                     self._log("Stage 2: styling into MM_* tables", "head")
@@ -850,6 +868,10 @@ class App(tk.Tk):
             except Exception as e:
                 self._log(f"FAILED {j['name']}: {e}", "err")
                 failed.append(j["name"])
+            finally:
+                tmp = j["site_dir"] / STAGE1_TMP
+                if tmp.exists():
+                    shutil.rmtree(tmp, ignore_errors=True)
 
         if self.stop_flag.is_set():
             self._log("\nStopped.", "warn")

@@ -37,8 +37,13 @@ only; no GDAL is needed to read the shapefiles.
    shapefiles; on = a separate site for each shapefile.
 4. **Output folder**, or tick **Same as input folder** to write next to the
    shapefile (the first shapefile's folder for a combined site).
-5. **Site name**: blank = the shapefile's name (`RedLine`, or
-   `RedLine_plus1` for a combined site from two files).
+   Results go straight into that folder; no subfolder is made.
+5. **Create a subfolder for the site** (off by default): puts the results in
+   `<output folder>\<site name>`. **Site name** blank = the shapefile's name
+   (`RedLine`, or `RedLine_plus1` for a combined site from two files).
+   With *One site per shapefile*, each subfolder is named after its shapefile.
+   If several per-shapefile sites would land in the same folder, they get
+   subfolders anyway, as their MM_* tables would otherwise overwrite each other.
 6. **Style into MM_* tables (stage 2)**: ticked by default.
    **Copy input shapefile(s) to the site folder as MapInfo TAB**: ticked by
    default (see below).
@@ -63,14 +68,15 @@ list beside it.
 
 ## Output
 
-Each site folder contains stage 1/stage 2 output as before, plus
+The output folder gets `site.gml.gz`, `manifest.json`, the MM_* tables,
+`style_report.txt`, the shapefile TAB(s), plus
 `site_extent_v2.json`, recording the source shapefiles, buffer, box, centre
 and tiles, so you can see later how the extent was made.
 
 ## Shapefile to MapInfo TAB
 
 With the tick box on, each input shapefile is converted to `<name>.tab` in the
-site folder, next to the MM_* tables, by `osmm_shp_to_tab.py`. It can also be
+output folder, next to the MM_* tables, by `osmm_shp_to_tab.py`. It can also be
 run on its own:
 
 ```

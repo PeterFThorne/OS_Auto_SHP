@@ -44,8 +44,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.2.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.3.0"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.3.0  PDF/JPG site plan (osmm_plan.py): Land Registry scale and paper
+#          chosen automatically, OS data in black and white with the
+#          shapefile in red, company title strip; one shapefile only
 #   1.2.0  Clearer preview: map drawn 1:1 (sharp labels), sharp text on
 #          scaled Windows displays, larger labels on white halos/panels,
 #          outline-only extraction box; shapefile drawn red. New settings:
@@ -68,6 +71,7 @@ MAP_CACHE = Path(tempfile.gettempdir()) / "osmm_gui_map_tiles"
 STAGE1 = "osmm_site_extract.py"
 STAGE2 = "osmm_style_mapinfo.py"
 SHP2TAB = "osmm_shp_to_tab.py"   # input shapefile(s) -> MapInfo TAB
+PLAN = "osmm_plan.py"            # site plan (PDF/JPG)
 
 TILE_M = 5000              # OS MasterMap tiles are 5 km squares (SW corner)
 LARGE_SIDE_M = 20000       # ask before extracting a box bigger than this
@@ -84,6 +88,7 @@ DEFAULTS = {
     "run_stage2": True,
     "shp_to_tab": True,
     "make_map": False,
+    "plan_format": "pdf",      # site plan: "pdf", "jpg" or "both"
     "open_when_done": True,
     "data_root": r"M:\2500MMdata",
     "scripts_dir": "",
@@ -455,7 +460,7 @@ class App(tk.Tk):
 
         self.vars = {}
         for key in ("buffer_m", "output_root", "site_name", "data_root",
-                    "scripts_dir"):
+                    "scripts_dir", "plan_format"):
             self.vars[key] = tk.StringVar(value=self.settings.get(key, ""))
         for key in ("per_file", "same_as_input", "subfolder", "run_stage2",
                     "shp_to_tab",
@@ -474,7 +479,7 @@ class App(tk.Tk):
 
         self.vars["buffer_m"].trace_add("write", lambda *_: self._refresh())
         for key in ("per_file", "subfolder", "same_as_input", "site_name",
-                    "output_root", "show_map"):
+                    "output_root", "show_map", "make_map"):
             self.vars[key].trace_add("write", lambda *_: self._refresh())
         self.vars["same_as_input"].trace_add(
             "write", lambda *_: self._toggle_output())
@@ -608,11 +613,9 @@ class App(tk.Tk):
                         "as MapInfo TAB",
                         variable=self.vars["shp_to_tab"])\
             .grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=2)
-        cb = ttk.Checkbutton(out, text="PDF/JPG map of shapefile + "
-                             "MasterMap (coming later)",
-                             variable=self.vars["make_map"])
-        cb.grid(row=7, column=0, columnspan=3, sticky="w", padx=6, pady=2)
-        cb.state(["disabled"])
+        ttk.Checkbutton(out, text="PDF/JPG site plan (one shapefile only)",
+                        variable=self.vars["make_map"])\
+            .grid(row=7, column=0, columnspan=3, sticky="w", padx=6, pady=2)
         ttk.Checkbutton(out, text="Open output folder when done",
                         variable=self.vars["open_when_done"])\
             .grid(row=8, column=0, columnspan=3, sticky="w", padx=6,
@@ -658,12 +661,27 @@ class App(tk.Tk):
                                    "(untick for GDAL's plain black outline)"),
                 ("keep_mif", "Also keep MIF/MID copies of the MM_* tables "
                              "(for other GIS software or checking)"),
-                ("delete_gml", "Delete site.gml.gz after the MM_* tables are "
-                               "made (saves space; it can be re-extracted)"),
+                ("delete_gml", "Delete site.gml.gz once the MM_* tables (and any "
+                               "plan) are made (saves space; it can be re-extracted)"),
                 ("save_log", "Save the run log in the output folder "
                              "(OS_Shapefile_Tool_log.txt)"))):
             ttk.Checkbutton(outf, text=text, variable=self.vars[key])\
                 .grid(row=r, column=0, sticky="w", padx=6, pady=2)
+
+        planf = ttk.LabelFrame(settings_tab, text="Site plan (PDF/JPG)")
+        planf.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(planf, text="Save the plan as:").grid(row=0, column=0,
+                                                        sticky="w", padx=6, pady=2)
+        for c, (val, text) in enumerate((("pdf", "PDF"), ("jpg", "JPG"),
+                                         ("both", "Both")), 1):
+            ttk.Radiobutton(planf, text=text, value=val,
+                            variable=self.vars["plan_format"])\
+                .grid(row=0, column=c, sticky="w", padx=8, pady=2)
+        ttk.Label(planf, foreground="#666", justify="left", text=(
+            "JPG needs the Pillow package (pip install pillow). The logo and "
+            "company details on the plan come from plan_logo.jpg and "
+            "plan_template.json in the pipeline scripts folder.")).grid(
+            row=1, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
 
         prevf = ttk.LabelFrame(settings_tab, text="Preview")
         prevf.pack(fill="x", padx=8, pady=(0, 8))
@@ -834,7 +852,44 @@ class App(tk.Tk):
             j["site_dir"] = j["out_root"] / j["name"] \
                 if sub or shared[str(j["out_root"]).lower()] > 1 \
                 else j["out_root"]
+        # Site plan: work out its scale/paper now, and make sure the OS data
+        # extracted covers the plan's whole map frame (not just the buffer).
+        if self.vars["make_map"].get() and len(good) == 1 and len(jobs) == 1:
+            j = jobs[0]
+            mod = self._plan_module()
+            if mod is None:
+                j["plan_error"] = f"{PLAN} not found in the pipeline scripts folder"
+            else:
+                try:
+                    lay = mod.choose_layout(self.shapes[good[0]]["bbox"])
+                    j["plan_layout"] = lay
+                    j["box"] = buffered_box(union_bbox([j["box"], lay["ground"]]), 0)
+                except ValueError as exc:
+                    j["plan_error"] = str(exc)
         return jobs
+
+    def _plan_module(self):
+        """osmm_plan.py from the pipeline scripts folder (cached; reloaded if
+        the file changes). None if it isn't there or can't be loaded."""
+        path = Path(self.vars["scripts_dir"].get()) / PLAN
+        try:
+            key = (str(path), path.stat().st_mtime)
+        except OSError:
+            return None
+        if getattr(self, "_plan_mod_key", None) != key:
+            self._plan_mod = None
+            try:
+                import importlib.util
+                if str(path.parent) not in sys.path:
+                    sys.path.insert(0, str(path.parent))
+                spec = importlib.util.spec_from_file_location("osmm_plan", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                self._plan_mod = mod
+            except Exception:
+                self._plan_mod = None
+            self._plan_mod_key = key
+        return self._plan_mod
 
     # ----- preview --------------------------------------------------------
     def _refresh(self):
@@ -857,7 +912,17 @@ class App(tk.Tk):
                 f"  {x1 - x0:,} x {y1 - y0:,} m",
                 f"  centre {(x0 + x1) // 2},{(y0 + y1) // 2}",
                 f"  tiles: {', '.join(t for t, _, _ in tiles)}",
-                f"  output: {short_path(j['site_dir'])}", ""]
+                f"  output: {short_path(j['site_dir'])}"]
+            if j.get("plan_layout"):
+                lay = j["plan_layout"]
+                lines.append(f"  plan: 1:{lay['scale']:,} @ {lay['paper']} "
+                             f"{lay['orientation']}")
+            elif j.get("plan_error"):
+                lines.append("  plan: " + j["plan_error"][:40])
+            lines.append("")
+        if self.vars["make_map"].get() and len(jobs) == 1 and \
+                len(jobs[0]["files"]) > 1:
+            lines.append("Site plan: needs exactly one shapefile")
         if len(jobs) > 6:
             lines.append(f"… and {len(jobs) - 6} more sites")
         self.extent_lbl.configure(text="\n".join(lines))
@@ -1183,6 +1248,14 @@ class App(tk.Tk):
             need.append(STAGE2)          # the TAB step reuses stage 2's GDAL code
         if self.vars["shp_to_tab"].get():
             need.append(SHP2TAB)
+        if self.vars["make_map"].get():
+            n_shp = len([k for k in self.listbox.get(0, "end") if k in self.shapes])
+            if n_shp != 1:
+                raise ValueError(
+                    "The PDF/JPG site plan works with one shapefile at a time, "
+                    f"but there are {n_shp} in the input list.\n\n"
+                    "Remove the others, or untick 'PDF/JPG site plan'.")
+            need += [STAGE2, PLAN]
         for s in need:
             if not (sdir / s).exists():
                 raise ValueError(f"Can't find {s} in {sdir}. Set 'Pipeline "
@@ -1191,6 +1264,9 @@ class App(tk.Tk):
         if not data or not Path(data).exists():
             raise ValueError(f"OS data folder not found: {data or '(blank)'}\n"
                              "Set it on the Settings tab.")
+        if self.vars["make_map"].get() and jobs[0].get("plan_error"):
+            raise ValueError("Can't make the site plan: "
+                             + jobs[0]["plan_error"] + ".")
         return jobs
 
     def _run(self):
@@ -1209,11 +1285,107 @@ class App(tk.Tk):
                 f"{LARGE_SIDE_M // 1000} km across and may take a while:\n"
                 + "\n".join(big) + "\n\nRun anyway?"):
             return
+        if self.vars["make_map"].get():
+            details = self._ask_plan_details(jobs[0])
+            if details is None:
+                return                       # cancelled
+            jobs[0]["plan"] = details
         self._save_settings()
         self.stop_flag.clear()
         self.run_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         threading.Thread(target=self._worker, args=(jobs,), daemon=True).start()
+
+    def _ask_plan_details(self, job):
+        """Pop-up asking for the plan title, drawing number and where to
+        save it. Returns a dict, or None if cancelled."""
+        fmt = self.vars["plan_format"].get()
+        exts = {"pdf": [".pdf"], "jpg": [".jpg"], "both": [".pdf", ".jpg"]}[fmt]
+        lay = job.get("plan_layout") or {}
+        stem = Path(job["files"][0]).stem
+        win = tk.Toplevel(self)
+        win.title("Site plan details")
+        win.transient(self)
+        win.resizable(False, False)
+        frm = ttk.Frame(win, padding=14)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(1, weight=1)
+        v_title = tk.StringVar()
+        v_draw = tk.StringVar()
+        v_name = tk.StringVar(value=f"{stem}_plan")
+        v_dir = tk.StringVar(value=str(job["site_dir"]))
+        name_edited = [False]
+
+        def follow_drawing(*_):
+            if not name_edited[0]:
+                d = v_draw.get().strip()
+                v_name.set(safe_name(d) if d else f"{stem}_plan")
+        v_draw.trace_add("write", follow_drawing)
+
+        def row(r, label, var, width=44):
+            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", pady=3)
+            e = ttk.Entry(frm, textvariable=var, width=width)
+            e.grid(row=r, column=1, columnspan=2, sticky="ew", pady=3)
+            return e
+        e_title = row(0, "Plan title:", v_title)
+        row(1, "Drawing number:", v_draw)
+        e_name = row(2, "File name:", v_name)
+        e_name.bind("<Key>", lambda e: name_edited.__setitem__(0, True))
+        ttk.Label(frm, text="Save in folder:").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(frm, textvariable=v_dir, width=36).grid(row=3, column=1,
+                                                          sticky="ew", pady=3)
+
+        def browse():
+            d = filedialog.askdirectory(parent=win, initialdir=v_dir.get() or None)
+            if d:
+                v_dir.set(str(Path(d)))
+        ttk.Button(frm, text="Browse…", command=browse).grid(row=3, column=2,
+                                                              padx=(6, 0), pady=3)
+        info = (f"Output: {' + '.join(e[1:].upper() for e in exts)}  "
+                "(change on the Settings tab)")
+        if lay:
+            info += (f"\nScale 1:{lay['scale']:,} on {lay['paper']} "
+                     f"{lay['orientation']}, chosen to fit the shapefile")
+        ttk.Label(frm, text=info, foreground="#555", justify="left")\
+            .grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 4))
+        result = {}
+
+        def ok():
+            name = v_name.get().strip()
+            for ext in (".pdf", ".jpg", ".jpeg"):
+                if name.lower().endswith(ext):
+                    name = name[: -len(ext)]
+            name = re.sub(r'[<>:"/\\|?*]+', "_", name).strip(" .")
+            folder = v_dir.get().strip()
+            if not name or not folder:
+                messagebox.showerror(APP_TITLE, "Enter a file name and a folder.",
+                                     parent=win)
+                return
+            base = Path(folder) / name
+            exist = [str(base) + e for e in exts if Path(str(base) + e).exists()]
+            if exist and not messagebox.askyesno(
+                    APP_TITLE, "Replace the existing file(s)?\n\n"
+                    + "\n".join(exist), parent=win):
+                return
+            result.update(title=v_title.get().strip(),
+                          drawing=v_draw.get().strip(), base=str(base))
+            win.destroy()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        ttk.Button(btns, text="Make plan", style="Run.TButton",
+                   command=ok).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left")
+        win.bind("<Return>", lambda e: ok())
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - win.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        win.grab_set()
+        e_title.focus_set()
+        self.wait_window(win)
+        return result or None
 
     def _stop(self):
         self.stop_flag.set()
@@ -1269,7 +1441,7 @@ class App(tk.Tk):
     def _worker(self, jobs):
         sdir = Path(self.vars["scripts_dir"].get())
         data = self.vars["data_root"].get().strip()
-        done, failed, tab_failed = [], [], []
+        done, failed, tab_failed, plan_failed = [], [], [], []
         reindex = self.vars["reindex"].get()
         for i, j in enumerate(jobs, 1):
             if self.stop_flag.is_set():
@@ -1315,14 +1487,6 @@ class App(tk.Tk):
                         break
                     if rc != 0:
                         raise RuntimeError(f"stage 2 failed (exit code {rc})")
-                    if self.vars["delete_gml"].get():
-                        try:
-                            (site / "site.gml.gz").unlink()
-                            self._log("Deleted site.gml.gz (Settings: delete "
-                                      "after styling)")
-                        except OSError as exc:
-                            self._log(f"Couldn't delete site.gml.gz: {exc}",
-                                      "warn")
                 if self.vars["shp_to_tab"].get():
                     self._log("Shapefile(s) to MapInfo TAB", "head")
                     t_args = [*j["files"], "--output", str(site)]
@@ -1336,7 +1500,31 @@ class App(tk.Tk):
                                   "(see above); MasterMap tables are fine.",
                                   "warn")
                         tab_failed.append(j["name"])
-                # PDF/JPG map output will be added here later.
+                plan = j.get("plan")
+                if plan:
+                    self._log("Site plan (PDF/JPG)", "head")
+                    p_args = ["--gml", str(site / "site.gml.gz"),
+                              "--shapefile", j["files"][0],
+                              "--title", plan["title"],
+                              "--drawing", plan["drawing"],
+                              "--output", plan["base"],
+                              "--format", self.vars["plan_format"].get()]
+                    rc, _ = self._exec(script_command(sdir / PLAN, p_args))
+                    if self.stop_flag.is_set():
+                        break
+                    if rc != 0:
+                        self._log("The site plan had problems (see above); "
+                                  "the MapInfo tables are fine.", "warn")
+                        plan_failed.append(j["name"])
+                # Only now: the plan needs site.gml.gz too.
+                if self.vars["delete_gml"].get() and \
+                        (self.vars["run_stage2"].get() or plan):
+                    try:
+                        (site / "site.gml.gz").unlink()
+                        self._log("Deleted site.gml.gz (Settings: delete "
+                                  "after use)")
+                    except OSError as exc:
+                        self._log(f"Couldn't delete site.gml.gz: {exc}", "warn")
                 self._log(f"Finished: {site}", "ok")
                 done.append(site)
             except Exception as e:
@@ -1365,8 +1553,10 @@ class App(tk.Tk):
             if tab_failed:
                 summary += ("; shapefile TAB not made for: "
                             + ", ".join(tab_failed))
-            self._log("\n" + summary,
-                      "err" if failed else "warn" if tab_failed else "ok")
+            if plan_failed:
+                summary += "; site plan not made for: " + ", ".join(plan_failed)
+            self._log("\n" + summary, "err" if failed else
+                      "warn" if (tab_failed or plan_failed) else "ok")
             self.msgq.put(("status", summary, None))
             if done and self.vars["open_when_done"].get() and os.name == "nt":
                 try:

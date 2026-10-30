@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.2.0. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.3.0. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -23,6 +23,9 @@ OS_Auto_SHP\
     osmm_site_extract.py     (stage 1, copied from OS_Automation)
     osmm_style_mapinfo.py    (stage 2, copied from OS_Automation)
     osmm_shp_to_tab.py       (input shapefile(s) -> MapInfo TAB)
+    osmm_plan.py             (site plan, PDF/JPG)
+    plan_logo.jpg            (logo on the plan)
+    plan_template.json       (company details on the plan; edit as needed)
     README.md
 ```
 
@@ -48,6 +51,7 @@ The window has two tabs:
       space; it can always be re-extracted.
     - **Save the run log in the output folder** (off): writes
       `OS_Shapefile_Tool_log.txt` next to the tables, a record of what was run.
+  - *Site plan (PDF/JPG)*: save the plan as **PDF**, **JPG** or **Both**.
   - *Preview*: **Show the OpenStreetMap background** (on): untick if the
     map is slow or there's no internet.
 
@@ -70,7 +74,7 @@ The window has two tabs:
 6. **Style into MM_* tables (stage 2)**: ticked by default.
    **Copy input shapefile(s) to the output folder as MapInfo TAB**: ticked by
    default (see below).
-7. **PDF/JPG map**: visible but disabled until that feature is built.
+7. **PDF/JPG site plan (one shapefile only)**: see *Site plan* below.
 8. Press **Run**.
 
 The preview map works like the OS Point Tool's: an OpenStreetMap background
@@ -126,6 +130,41 @@ python osmm_shp_to_tab.py RedLine.shp [more.shp ...] --output <folder> [--no-sty
 - Needs GDAL, found the same way as stage 2 (ogr2ogr, osgeo, or pyogrio). If
   it fails, the MasterMap tables are still made and the log says why.
 
+## Site plan (PDF/JPG)
+
+Tick **PDF/JPG site plan** to get a Land Registry style plan as well as the
+MapInfo tables. It works with exactly one shapefile; with more in the list,
+Run stops with a message.
+
+When you press Run, a pop-up asks for the **plan title**, **drawing
+number**, **file name** (it follows the drawing number until you edit it)
+and **folder** (defaults to the output folder). The format (PDF, JPG or
+both) is set on the Settings tab.
+
+The plan (`osmm_plan.py`) follows the company layout:
+
+- OS MasterMap in black and white (the same linework, symbols, tree
+  patterns and text placement as the MM_* tables), the shapefile as a red
+  outline on top, and a black-and-white scale bar.
+- Title strip: title, *Location* (6-figure grid reference of the site),
+  *Scale ... @ A4*, *Drawing No.*, today's *Date* (dd.mm.yy), north point,
+  logo, address and the OS copyright block.
+- **Scale and paper are chosen automatically**: the largest Land Registry
+  scale (1:500, then 1:1,250, then 1:2,500) at which the shapefile fits on
+  A4, portrait or landscape, with at least 10 mm to spare. If it doesn't
+  fit on A4 at 1:2,500, A3 is used, then A2, A1, A0. The preview's extent
+  panel shows the choice (e.g. *plan: 1:500 @ A4 portrait*).
+- The OS data extracted is widened to cover the plan's whole map frame, so
+  the plan never has empty edges.
+- PDF needs nothing extra (the script writes it itself). JPG needs Pillow:
+  `pip install pillow`. JPGs are 300 dpi (less on A1/A0 to keep the file a
+  sensible size).
+- Fonts: Times and Arial/Helvetica for the title strip; the map text uses
+  Century Gothic if it's installed (Windows/Office), otherwise Arial.
+- Company details (address lines, copyright lines, licence number), the
+  logo file, and the boundary colour and line width are in
+  `plan_template.json`.
+
 ## How the box is built
 
 The box is rounded outwards to whole metres and made an even size, so the
@@ -137,11 +176,11 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.3.0 | PDF/JPG site plan: Land Registry scale and paper chosen automatically (1:500/1:1,250/1:2,500, A4 up to A0), OS data in black and white with the shapefile in red, scale bar, date, title strip from the company layout; pop-up for title, drawing number and file name; PDF/JPG/both on the Settings tab; one shapefile only |
 | 1.2.0 | Clearer preview (map drawn 1:1 so labels stay sharp; sharp text on scaled Windows displays; larger labels on white halos/panels; outline-only extraction box); shapefile drawn red. New settings: red/plain boundary TAB, keep MIF/MID, delete site.gml.gz, save run log, map background on/off |
 | 1.0.1 | Shapefile to TAB: fields with many decimal places (e.g. `area`, `perimeter`) are written as Float instead of failing; GDAL's real error message shown in the log; a table with missing records is reported as a failure |
 | 1.0.0 | Renamed to OS Shapefile Tool; app icon (map grid + boundary polygon, `os_shapefile_tool.ico`); OpenStreetMap preview in British National Grid as in the OS Point Tool; Settings moved to their own tab; results go straight into the output folder, with an optional site subfolder; input shapefile(s) copied to the output as MapInfo TAB |
 
 ## Still to do
 
-- PDF/JPG map output (shapefile over the styled MasterMap). The hook is
-  marked in `_worker()` where it will run after stage 2.
+- Nothing outstanding.

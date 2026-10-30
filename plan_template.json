@@ -1,0 +1,17 @@
+{
+  "_note": "Company details printed on the site plan (osmm_plan.py). Edit as needed; 'logo' is a JPEG file in this folder.",
+  "logo": "plan_logo.jpg",
+  "address": [
+    "Little Cutsey, Cutsey, Taunton. Somerset. TA3 7NY",
+    "Tel: 01823 421354 Email: patrick@mapping-company.co.uk"
+  ],
+  "copyright": [
+    "Based on Ordnance Survey 1:2,500",
+    "mapping with the permission of",
+    "the Controller of HMSO",
+    "©Crown Copyright",
+    "Licence No. VA 100033416"
+  ],
+  "boundary_colour": "#ff0000",
+  "boundary_width_pt": 1.5
+}

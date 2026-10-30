@@ -44,9 +44,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.1.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.2.0"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
-#   1.1.0  Clearer preview: map drawn 1:1 (sharp labels), sharp text on
+#   1.2.0  Clearer preview: map drawn 1:1 (sharp labels), sharp text on
 #          scaled Windows displays, larger labels on white halos/panels,
 #          outline-only extraction box; shapefile drawn red. New settings:
 #          plain/red boundary TAB, keep MIF/MID, delete site.gml.gz,

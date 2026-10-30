@@ -19,6 +19,7 @@ OS_Auto_SHP\
     osmm_gui_v2.py           (this app)
     osmm_site_extract.py     (stage 1, copied from OS_Automation)
     osmm_style_mapinfo.py    (stage 2, copied from OS_Automation)
+    osmm_shp_to_tab.py       (input shapefile(s) -> MapInfo TAB)
     README.md
 ```
 
@@ -39,6 +40,8 @@ only; no GDAL is needed to read the shapefiles.
 5. **Site name**: blank = the shapefile's name (`RedLine`, or
    `RedLine_plus1` for a combined site from two files).
 6. **Style into MM_* tables (stage 2)**: ticked by default.
+   **Copy input shapefile(s) to the site folder as MapInfo TAB**: ticked by
+   default (see below).
 7. **PDF/JPG map**: visible but disabled until that feature is built.
 8. Press **Run**.
 
@@ -63,6 +66,27 @@ list beside it.
 Each site folder contains stage 1/stage 2 output as before, plus
 `site_extent_v2.json`, recording the source shapefiles, buffer, box, centre
 and tiles, so you can see later how the extent was made.
+
+## Shapefile to MapInfo TAB
+
+With the tick box on, each input shapefile is converted to `<name>.tab` in the
+site folder, next to the MM_* tables, by `osmm_shp_to_tab.py`. It can also be
+run on its own:
+
+```
+python osmm_shp_to_tab.py RedLine.shp [more.shp ...] --output <folder> [--no-style]
+```
+
+- Opens in MapInfo 8.5: same GDAL settings as stage 2 (EPSG:27700, CP1252),
+  large-integer fields (10+ digit numbers) are written as Decimal, and the
+  header is checked with stage 2's `make_mapinfo85_safe()`.
+- Styled so it shows over the MasterMap without hiding it: red 3 px outline
+  and no fill for polygons, red 3 px line for lines, red circle for points.
+  `--no-style` keeps GDAL's default (thin black, no fill).
+- Attribute columns are kept as they are; the record count is checked
+  against the shapefile.
+- Needs GDAL, found the same way as stage 2 (ogr2ogr, osgeo, or pyogrio). If
+  it fails, the MasterMap tables are still made and the log says why.
 
 ## How the box is built
 

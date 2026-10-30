@@ -44,6 +44,7 @@ SETTINGS_NAME = "osmm_gui_v2_settings.json"
 
 STAGE1 = "osmm_site_extract.py"
 STAGE2 = "osmm_style_mapinfo.py"
+SHP2TAB = "osmm_shp_to_tab.py"   # input shapefile(s) -> MapInfo TAB
 
 TILE_M = 5000              # OS MasterMap tiles are 5 km squares (SW corner)
 LARGE_SIDE_M = 20000       # ask before extracting a box bigger than this
@@ -55,6 +56,7 @@ DEFAULTS = {
     "same_as_input": True,
     "site_name": "",
     "run_stage2": True,
+    "shp_to_tab": True,
     "make_map": False,
     "open_when_done": True,
     "data_root": r"M:\2500MMdata",
@@ -288,7 +290,8 @@ class App(tk.Tk):
         for key in ("buffer_m", "output_root", "site_name", "data_root",
                     "scripts_dir"):
             self.vars[key] = tk.StringVar(value=self.settings.get(key, ""))
-        for key in ("per_file", "same_as_input", "run_stage2", "make_map",
+        for key in ("per_file", "same_as_input", "run_stage2", "shp_to_tab",
+                    "make_map",
                     "open_when_done", "reindex"):
             self.vars[key] = tk.BooleanVar(value=bool(self.settings.get(key)))
         if not self.vars["scripts_dir"].get():
@@ -391,14 +394,18 @@ class App(tk.Tk):
         ttk.Checkbutton(out, text="Style into MM_* tables (stage 2)",
                         variable=self.vars["run_stage2"])\
             .grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(out, text="Copy input shapefile(s) to the site folder "
+                        "as MapInfo TAB",
+                        variable=self.vars["shp_to_tab"])\
+            .grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=2)
         cb = ttk.Checkbutton(out, text="PDF/JPG map of shapefile + "
                              "MasterMap (coming later)",
                              variable=self.vars["make_map"])
-        cb.grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+        cb.grid(row=6, column=0, columnspan=3, sticky="w", padx=6, pady=2)
         cb.state(["disabled"])
         ttk.Checkbutton(out, text="Open output folder when done",
                         variable=self.vars["open_when_done"])\
-            .grid(row=6, column=0, columnspan=3, sticky="w", padx=6,
+            .grid(row=7, column=0, columnspan=3, sticky="w", padx=6,
                   pady=(2, 6))
 
         # --- Extent + preview ---------------------------------------------
@@ -687,7 +694,12 @@ class App(tk.Tk):
             raise ValueError("Choose an output folder, or tick "
                              "'Same as input folder'.")
         sdir = Path(self.vars["scripts_dir"].get())
-        for s in [STAGE1] + ([STAGE2] if self.vars["run_stage2"].get() else []):
+        need = [STAGE1]
+        if self.vars["run_stage2"].get() or self.vars["shp_to_tab"].get():
+            need.append(STAGE2)          # the TAB step reuses stage 2's GDAL code
+        if self.vars["shp_to_tab"].get():
+            need.append(SHP2TAB)
+        for s in need:
             if not (sdir / s).exists():
                 raise ValueError(f"Can't find {s} in {sdir}. Set 'Pipeline "
                                  "scripts' in Settings.")
@@ -777,7 +789,7 @@ class App(tk.Tk):
     def _worker(self, jobs):
         sdir = Path(self.vars["scripts_dir"].get())
         data = self.vars["data_root"].get().strip()
-        done, failed = [], []
+        done, failed, tab_failed = [], [], []
         reindex = self.vars["reindex"].get()
         for i, j in enumerate(jobs, 1):
             if self.stop_flag.is_set():
@@ -821,6 +833,17 @@ class App(tk.Tk):
                         break
                     if rc != 0:
                         raise RuntimeError(f"stage 2 failed (exit code {rc})")
+                if self.vars["shp_to_tab"].get():
+                    self._log("Shapefile(s) to MapInfo TAB", "head")
+                    rc, _ = self._exec(script_command(
+                        sdir / SHP2TAB, [*j["files"], "--output", str(site)]))
+                    if self.stop_flag.is_set():
+                        break
+                    if rc != 0:
+                        self._log("Shapefile TAB conversion had problems "
+                                  "(see above); MasterMap tables are fine.",
+                                  "warn")
+                        tab_failed.append(j["name"])
                 # PDF/JPG map output will be added here later.
                 self._log(f"Finished: {site}", "ok")
                 done.append(site)
@@ -835,7 +858,11 @@ class App(tk.Tk):
             summary = f"{len(done)} site(s) done"
             if failed:
                 summary += f", {len(failed)} failed: " + ", ".join(failed)
-            self._log("\n" + summary, "err" if failed else "ok")
+            if tab_failed:
+                summary += ("; shapefile TAB not made for: "
+                            + ", ".join(tab_failed))
+            self._log("\n" + summary,
+                      "err" if failed else "warn" if tab_failed else "ok")
             self.msgq.put(("status", summary, None))
             if done and self.vars["open_when_done"].get() and os.name == "nt":
                 try:

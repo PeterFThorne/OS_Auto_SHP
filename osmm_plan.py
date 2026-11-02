@@ -1046,8 +1046,9 @@ def draw_legend(d, x1, y0, entries, field, style, show_area=False):
     d.text(x0 + 6, y0 + h - 10, label, "Helvetica", size)
     for i, ((value, colour, area), t) in enumerate(zip(entries, texts)):
         yy = y0 + h - 10 - line_h * (i + 1)
-        if style == "outline":
-            d.line([(x0 + 6, yy + 2.5), (x0 + 18, yy + 2.5)], 1.5, colour)
+        if style == "outline":          # hollow box in the outline colour
+            d.rect(x0 + 6.5, yy, x0 + 17.5, yy + 5.5, fill=None, stroke=colour,
+                   width=1.2)
         else:
             d.rect(x0 + 6, yy - 0.5, x0 + 18, yy + 6, fill=colour,
                    stroke=(0.3, 0.3, 0.3), width=0.3)

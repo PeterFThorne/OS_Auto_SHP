@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.5.0. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.5.1. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -62,6 +62,8 @@ The window has two tabs:
       `plan_template.json` (`title_colours`).
     - **Add a key listing each title number** (off): a key in the
       bottom-right of the map, one line per title number with its colour.
+      - With *Red outline* the key shows hollow boxes in each colour; with
+        *Pink fill*, filled boxes.
       - **Show the area of each title in the key** (off): e.g.
         `ST136465 (0.71 ha / 1.75 ac)`. Areas are worked out from the
         polygons themselves (holes subtracted; a title with several
@@ -205,6 +207,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.5.1 | Key: hollow boxes (in the outline colour) instead of lines when the site is shown as an outline |
 | 1.5.0 | Site plan: optional key listing each title number, optionally with its area in hectares and acres; title number field set once for colours and key |
 | 1.4.0 | Site plan: OS lines in their normal colours; text drawn above the site boundary; red outline or pink fill; optional colour per title number with a key; drawing-number suffix (default `-01`); orientation setting (auto/portrait/landscape); title box stays A4 size in the bottom-left on landscape and larger sheets; scale bar length per scale and paper |
 | 1.3.0 | PDF/JPG site plan: Land Registry scale and paper chosen automatically (1:500/1:1,250/1:2,500, A4 up to A0), OS data in black and white with the shapefile in red, scale bar, date, title strip from the company layout; pop-up for title, drawing number and file name; PDF/JPG/both on the Settings tab; one shapefile only |

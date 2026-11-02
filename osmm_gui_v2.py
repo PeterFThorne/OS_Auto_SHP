@@ -44,8 +44,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.5.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.5.1"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.5.1  Key shows hollow boxes for outlined sites
 #   1.5.0  Site plan: optional key per title number, optionally with each
 #          title's area (ha / ac)
 #   1.4.0  Site plan: OS lines in normal colours, text above the boundary,

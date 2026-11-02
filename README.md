@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.4.0. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.5.0. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -56,9 +56,17 @@ The window has two tabs:
     - **Paper orientation**: *Auto* (portrait first, then landscape),
       *Portrait* or *Landscape*.
     - **Show the site as**: *Red outline* or *Pink fill*.
-    - **Give each title number its own colour, using the field** (off;
-      field `title_no`): each value gets its own colour, with a key on the
-      plan. The colours are in `plan_template.json` (`title_colours`).
+    - **Title number field in the shapefile** (`title_no`): used for the
+      colours and the key.
+    - **Give each title number its own colour** (off). The colours are in
+      `plan_template.json` (`title_colours`).
+    - **Add a key listing each title number** (off): a key in the
+      bottom-right of the map, one line per title number with its colour.
+      - **Show the area of each title in the key** (off): e.g.
+        `ST136465 (0.71 ha / 1.75 ac)`. Areas are worked out from the
+        polygons themselves (holes subtracted; a title with several
+        polygons shows their total) and are also written to the log. If
+        the shapefile has no title field, the key shows the whole site.
     - **Add to the drawing number** (`-01`): added to what you type in the
       pop-up, so `ZAA29728` is printed as `ZAA29728-01`. Blank for none.
   - *Preview*: **Show the OpenStreetMap background** (on): untick if the
@@ -197,6 +205,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.5.0 | Site plan: optional key listing each title number, optionally with its area in hectares and acres; title number field set once for colours and key |
 | 1.4.0 | Site plan: OS lines in their normal colours; text drawn above the site boundary; red outline or pink fill; optional colour per title number with a key; drawing-number suffix (default `-01`); orientation setting (auto/portrait/landscape); title box stays A4 size in the bottom-left on landscape and larger sheets; scale bar length per scale and paper |
 | 1.3.0 | PDF/JPG site plan: Land Registry scale and paper chosen automatically (1:500/1:1,250/1:2,500, A4 up to A0), OS data in black and white with the shapefile in red, scale bar, date, title strip from the company layout; pop-up for title, drawing number and file name; PDF/JPG/both on the Settings tab; one shapefile only |
 | 1.2.0 | Clearer preview (map drawn 1:1 so labels stay sharp; sharp text on scaled Windows displays; larger labels on white halos/panels; outline-only extraction box); shapefile drawn red. New settings: red/plain boundary TAB, keep MIF/MID, delete site.gml.gz, save run log, map background on/off |

@@ -14,6 +14,7 @@ date, north point, logo, address and copyright).
 
                         [--orientation auto|portrait|landscape]
                         [--style outline|fill] [--colour-by FIELD]
+                        [--key] [--key-area] [--title-field FIELD]
 
 Scale and paper are chosen automatically: the largest Land Registry scale
 (1:500, then 1:1,250, then 1:2,500) at which the shapefile fits on A4
@@ -960,53 +961,115 @@ def _tint(colour, amount=0.62):
     return tuple(c + (1 - c) * amount for c in colour)
 
 
-def _boundary_colours(records, template, style, colour_by):
-    """Colour (outline or fill) for each record, and legend entries."""
+SQM_PER_ACRE = 4046.8564224
+
+
+def _ring_area(ring):
+    """Unsigned area of one ring (m2), by the shoelace formula."""
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1)
+                   in zip(ring, ring[1:] + ring[:1]))) / 2
+
+
+def _inside_ring(x, y, ring):
+    inside = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def polygon_area(parts):
+    """Area (m2) of a polygon record: rings inside an odd number of other
+    rings are holes and are subtracted (works whatever the ring direction)."""
+    total = 0.0
+    for i, ring in enumerate(parts):
+        if len(ring) < 3:
+            continue
+        x, y = ring[0]
+        depth = sum(1 for j, other in enumerate(parts)
+                    if j != i and len(other) >= 3 and _inside_ring(x, y, other))
+        total += -_ring_area(ring) if depth % 2 else _ring_area(ring)
+    return total
+
+
+def area_text(m2):
+    return f"{m2 / 10000:.2f} ha / {m2 / SQM_PER_ACRE:.2f} ac"
+
+
+def _boundary_colours(records, template, style, colour_by, key_field=""):
+    """Colour (outline or fill) for each record, and the key entries:
+    [(label, colour, area m2 or None), ...], one per title number (or one
+    for the whole site if there's no title field)."""
     single = parse_hex(template.get("boundary_colour", "#ff0000")) \
         if style == "outline" else parse_hex(template.get("fill_colour", "#f9b9cf"))
-    if not colour_by:
-        return [single] * len(records), []
     palette = [parse_hex(c) for c in template.get("title_colours", [])] or [single]
-    keys, colours = {}, []
+    group_field = colour_by or key_field
+    keys, colours, areas = {}, [], {}
     for r in records:
-        value = r["attrs"].get(colour_by, "") or "(blank)"
+        value = (r["attrs"].get(group_field, "") or "(blank)") if group_field \
+            else "Site"
         if value not in keys:
-            keys[value] = palette[len(keys) % len(palette)]
+            keys[value] = palette[len(keys) % len(palette)] if colour_by else single
         base = keys[value]
-        colours.append(base if style == "outline" else _tint(base))
-    legend = [(v, c if style == "outline" else _tint(c)) for v, c in keys.items()]
-    return colours, legend
+        colours.append(base if style == "outline" or not colour_by else _tint(base))
+        if r["closed"]:
+            areas[value] = areas.get(value, 0.0) + polygon_area(r["parts"])
+    key = []
+    for value, c in keys.items():
+        shown = c if style == "outline" or not colour_by else _tint(c)
+        key.append((value, shown, areas.get(value)))
+    return colours, key
 
 
-def draw_legend(d, x1, y0, entries, field, style):
-    """Key for the colours, bottom-right of the map."""
+def draw_legend(d, x1, y0, entries, field, style, show_area=False):
+    """Key for the site, bottom-right of the map: one line per title number,
+    optionally with its area, e.g. 'ST136465 (0.71 ha / 1.75 ac)'."""
     entries = entries[:14]
-    label = "Title No." if field.lower() in ("title_no", "title", "titleno") else field
+    label = "Title No." if field.lower() in ("title_no", "title", "titleno") \
+        else (field or "Key")
     line_h, size = 10, 7
-    w = max(text_width(str(v), "Helvetica", size) for v, _ in entries) + 26
+    texts = []
+    for value, colour, area in entries:
+        t = str(value)
+        if show_area and area is not None:
+            t += f" ({area_text(area)})"
+        texts.append(t)
+    w = max(text_width(t, "Helvetica", size) for t in texts) + 28
     w = max(w, text_width(label, "Helvetica", size) + 12)
     h = line_h * (len(entries) + 1) + 6
     x0 = x1 - w
     d.rect(x0, y0, x1, y0 + h, fill=(1, 1, 1), stroke=(0, 0, 0), width=0.5)
     d.text(x0 + 6, y0 + h - 10, label, "Helvetica", size)
-    for i, (value, colour) in enumerate(entries):
+    for i, ((value, colour, area), t) in enumerate(zip(entries, texts)):
         yy = y0 + h - 10 - line_h * (i + 1)
         if style == "outline":
             d.line([(x0 + 6, yy + 2.5), (x0 + 18, yy + 2.5)], 1.5, colour)
         else:
             d.rect(x0 + 6, yy - 0.5, x0 + 18, yy + 6, fill=colour,
                    stroke=(0.3, 0.3, 0.3), width=0.3)
-        d.text(x0 + 22, yy, str(value), "Helvetica", size)
+        d.text(x0 + 22, yy, t, "Helvetica", size)
 
 
 def build_plan(gml, shapefile, title, drawing_no, template, log=print,
-               today=None, orientation="auto", style="outline", colour_by=""):
+               today=None, orientation="auto", style="outline", colour_by="",
+               key=False, key_area=False, title_field="title_no"):
     records, bbox = read_shapefile(shapefile)
-    if colour_by and records and colour_by not in records[0]["attrs"]:
-        fields = ", ".join(records[0]["attrs"]) or "none"
-        log(f"  Warning: the shapefile has no '{colour_by}' field (fields: "
-            f"{fields}); using one colour")
+    fields = list(records[0]["attrs"]) if records else []
+    for name in ("colour_by", "title_field"):
+        f_ = locals()[name]
+        if f_ and f_ not in fields:
+            log(f"  Warning: the shapefile has no '{f_}' field (fields: "
+                f"{', '.join(fields) or 'none'}); "
+                + ("using one colour" if name == "colour_by"
+                   else "the key shows the site as a whole"))
+    if colour_by not in fields:
         colour_by = ""
+    if title_field not in fields:
+        title_field = ""
     lay = choose_layout(bbox, orientation)
     scale, paper = lay["scale"], lay["paper"]
     pw, ph = (v * PT_PER_MM for v in lay["paper_mm"])
@@ -1021,7 +1084,8 @@ def build_plan(gml, shapefile, title, drawing_no, template, log=print,
 
     log(f"  plan: 1:{scale:,} on {paper} {lay['orientation']}"
         + (", site in pink fill" if style == "fill" else ""))
-    colours, legend = _boundary_colours(records, template, style, colour_by)
+    colours, legend = _boundary_colours(records, template, style, colour_by,
+                                        title_field if key else "")
     bw = float(template.get("boundary_width_pt", 1.5))
 
     # --- map: fill (under everything), OS lines, outline, OS text on top ---
@@ -1051,9 +1115,13 @@ def build_plan(gml, shapefile, title, drawing_no, template, log=print,
                    bw, line_colour, closed=True)
     draw_os_text(d, texts, to_paper, scale, log)
     draw_scalebar(d, fx0 + 22, by1 + 20, scale, paper)
-    if legend and len(legend) > 1:
+    if key and legend:
         draw_legend(d, fx1 - 8, (fy0 if bx1 < fx1 - 120 else by1) + 8, legend,
-                    colour_by, style)
+                    colour_by or title_field, style, show_area=key_area)
+        if key_area:
+            for value, _c, area in legend:
+                if area is not None:
+                    log(f"  {value}: {area_text(area)}")
     d.unclip()
 
     # --- border and title box (A4 width, bottom-left) ---
@@ -1121,6 +1189,12 @@ def main(argv=None):
                    help="site as a red outline, or a pink fill")
     p.add_argument("--colour-by", default="",
                    help="give each value of this field (e.g. title_no) its own colour")
+    p.add_argument("--key", action="store_true",
+                   help="add a key listing each title number")
+    p.add_argument("--key-area", action="store_true",
+                   help="show each title's area (ha / acres) in the key")
+    p.add_argument("--title-field", default="title_no",
+                   help="field holding the title number (for the key)")
     a = p.parse_args(argv)
 
     print("Making the site plan")
@@ -1132,7 +1206,9 @@ def main(argv=None):
         d, lay = build_plan(a.gml, a.shapefile, a.title, a.drawing,
                             load_template(a.template),
                             orientation=a.orientation, style=a.style,
-                            colour_by=a.colour_by.strip())
+                            colour_by=a.colour_by.strip(), key=a.key,
+                            key_area=a.key_area,
+                            title_field=a.title_field.strip())
     except ValueError as exc:
         print(f"  ERROR: {exc}")
         sys.exit(1)

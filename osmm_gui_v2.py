@@ -44,8 +44,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.4.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.5.0"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.5.0  Site plan: optional key per title number, optionally with each
+#          title's area (ha / ac)
 #   1.4.0  Site plan: OS lines in normal colours, text above the boundary,
 #          red outline or pink fill, colour per title number, drawing number
 #          suffix, orientation setting, A4-size title box bottom-left on
@@ -97,6 +99,8 @@ DEFAULTS = {
     "plan_style": "outline",   # site as a red "outline" or a pink "fill"
     "plan_colour_by": False,   # a different colour per title number
     "plan_colour_field": "title_no",
+    "plan_key": False,         # key listing each title number
+    "plan_key_area": False,    # ...with the area of each (ha / ac)
     "drawing_suffix": "-01",   # added to the drawing number on the plan
     "open_when_done": True,
     "data_root": r"M:\2500MMdata",
@@ -477,7 +481,7 @@ class App(tk.Tk):
                     "make_map",
                     "open_when_done", "reindex", "show_map", "keep_mif",
                     "delete_gml", "save_log", "style_boundary",
-                    "plan_colour_by"):
+                    "plan_colour_by", "plan_key", "plan_key_area"):
             self.vars[key] = tk.BooleanVar(value=bool(self.settings.get(key)))
         if not self.vars["scripts_dir"].get():
             self.vars["scripts_dir"].set(str(app_dir()))
@@ -700,15 +704,32 @@ class App(tk.Tk):
                 ("landscape", "Landscape")))
         radios(2, "Show the site as:", "plan_style",
                (("outline", "Red outline"), ("fill", "Pink fill")))
-        crow = ttk.Frame(planf)
-        crow.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=2)
-        ttk.Checkbutton(crow, text="Give each title number its own colour, "
-                        "using the field:", variable=self.vars["plan_colour_by"])\
+        frow = ttk.Frame(planf)
+        frow.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=2)
+        ttk.Label(frow, text="Title number field in the shapefile:")\
             .pack(side="left")
-        ttk.Entry(crow, textvariable=self.vars["plan_colour_field"], width=14)\
+        ttk.Entry(frow, textvariable=self.vars["plan_colour_field"], width=14)\
             .pack(side="left", padx=6)
+        ttk.Checkbutton(planf, text="Give each title number its own colour",
+                        variable=self.vars["plan_colour_by"])\
+            .grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(planf, text="Add a key listing each title number",
+                        variable=self.vars["plan_key"])\
+            .grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=2)
+        self.key_area_cb = ttk.Checkbutton(
+            planf, text="Show the area of each title in the key "
+            "(e.g. ST136465 (0.71 ha / 1.75 ac))",
+            variable=self.vars["plan_key_area"])
+        self.key_area_cb.grid(row=6, column=0, columnspan=4, sticky="w",
+                              padx=(30, 6), pady=2)
+
+        def key_toggled(*_):
+            self.key_area_cb.state(["!disabled"] if self.vars["plan_key"].get()
+                                   else ["disabled"])
+        self.vars["plan_key"].trace_add("write", key_toggled)
+        key_toggled()
         srow = ttk.Frame(planf)
-        srow.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=2)
+        srow.grid(row=7, column=0, columnspan=4, sticky="w", padx=6, pady=2)
         ttk.Label(srow, text="Add to the drawing number:").pack(side="left")
         ttk.Entry(srow, textvariable=self.vars["drawing_suffix"], width=8)\
             .pack(side="left", padx=6)
@@ -718,7 +739,7 @@ class App(tk.Tk):
             "JPG needs the Pillow package (pip install pillow). The logo, "
             "company details and colours on the plan come from plan_logo.jpg "
             "and plan_template.json in the pipeline scripts folder.")).grid(
-            row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 4))
+            row=8, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 4))
 
         prevf = ttk.LabelFrame(settings_tab, text="Preview")
         prevf.pack(fill="x", padx=8, pady=(0, 8))
@@ -1401,6 +1422,10 @@ class App(tk.Tk):
         if self.vars["plan_colour_by"].get():
             info += (", a colour per '"
                      + self.vars["plan_colour_field"].get().strip() + "'")
+        if self.vars["plan_key"].get():
+            info += ("\nKey listing each title number"
+                     + (", with areas (ha / ac)" if self.vars["plan_key_area"].get()
+                        else ""))
         ttk.Label(frm, text=info, foreground="#555", justify="left")\
             .grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 4))
         result = {}
@@ -1569,6 +1594,12 @@ class App(tk.Tk):
                     field = self.vars["plan_colour_field"].get().strip()
                     if self.vars["plan_colour_by"].get() and field:
                         p_args += ["--colour-by", field]
+                    if field:
+                        p_args += ["--title-field", field]
+                    if self.vars["plan_key"].get():
+                        p_args.append("--key")
+                        if self.vars["plan_key_area"].get():
+                            p_args.append("--key-area")
                     rc, _ = self._exec(script_command(sdir / PLAN, p_args))
                     if self.stop_flag.is_set():
                         break

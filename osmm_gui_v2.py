@@ -44,8 +44,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.5.1"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.6.0"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.6.0  Option to not save the OS data (plan and/or shapefile TAB only)
 #   1.5.1  Key shows hollow boxes for outlined sites
 #   1.5.0  Site plan: optional key per title number, optionally with each
 #          title's area (ha / ac)
@@ -92,6 +93,7 @@ DEFAULTS = {
     "same_as_input": True,
     "subfolder": False,
     "site_name": "",
+    "save_data": True,         # keep the OS data (site.gml.gz, MM_* tables)
     "run_stage2": True,
     "shp_to_tab": True,
     "make_map": False,
@@ -478,6 +480,7 @@ class App(tk.Tk):
                     "plan_style", "plan_colour_field", "drawing_suffix"):
             self.vars[key] = tk.StringVar(value=self.settings.get(key, ""))
         for key in ("per_file", "same_as_input", "subfolder", "run_stage2",
+                    "save_data",
                     "shp_to_tab",
                     "make_map",
                     "open_when_done", "reindex", "show_map", "keep_mif",
@@ -623,9 +626,20 @@ class App(tk.Tk):
         self.name_entry.grid(row=3, column=1, columnspan=2, sticky="ew",
                              padx=(0, 6), pady=2)
 
-        ttk.Checkbutton(out, text="Style into MM_* tables (stage 2)",
-                        variable=self.vars["run_stage2"])\
-            .grid(row=5, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(out, text="Save the OS MasterMap data in the output "
+                        "folder", variable=self.vars["save_data"])\
+            .grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+        self.stage2_cb = ttk.Checkbutton(
+            out, text="Style into MM_* tables (stage 2)",
+            variable=self.vars["run_stage2"])
+        self.stage2_cb.grid(row=5, column=0, columnspan=3, sticky="w",
+                            padx=(26, 6), pady=2)
+
+        def data_toggled(*_):
+            self.stage2_cb.state(["!disabled"] if self.vars["save_data"].get()
+                                 else ["disabled"])
+        self.vars["save_data"].trace_add("write", data_toggled)
+        data_toggled()
         ttk.Checkbutton(out, text="Copy input shapefile(s) to the output folder "
                         "as MapInfo TAB",
                         variable=self.vars["shp_to_tab"])\
@@ -1303,8 +1317,15 @@ class App(tk.Tk):
             raise ValueError("Choose an output folder, or tick "
                              "'Same as input folder'.")
         sdir = Path(self.vars["scripts_dir"].get())
-        need = [STAGE1]
-        if self.vars["run_stage2"].get() or self.vars["shp_to_tab"].get():
+        save_data = self.vars["save_data"].get()
+        if not (save_data or self.vars["shp_to_tab"].get()
+                or self.vars["make_map"].get()):
+            raise ValueError("Nothing to make: tick 'Save the OS MasterMap "
+                             "data', 'Copy input shapefile(s) ... as MapInfo "
+                             "TAB' and/or 'PDF/JPG site plan'.")
+        need = [STAGE1] if (save_data or self.vars["make_map"].get()) else []
+        if (save_data and self.vars["run_stage2"].get()) or \
+                self.vars["shp_to_tab"].get():
             need.append(STAGE2)          # the TAB step reuses stage 2's GDAL code
         if self.vars["shp_to_tab"].get():
             need.append(SHP2TAB)
@@ -1321,7 +1342,7 @@ class App(tk.Tk):
                 raise ValueError(f"Can't find {s} in {sdir}. Set 'Pipeline "
                                  "scripts' on the Settings tab.")
         data = self.vars["data_root"].get().strip()
-        if not data or not Path(data).exists():
+        if STAGE1 in need and (not data or not Path(data).exists()):
             raise ValueError(f"OS data folder not found: {data or '(blank)'}\n"
                              "Set it on the Settings tab.")
         if self.vars["make_map"].get() and jobs[0].get("plan_error"):
@@ -1538,28 +1559,48 @@ class App(tk.Tk):
                                                    for f in j["files"]))
             self._log(f"Box W{x0} S{y0} E{x1} N{y1}  "
                       f"({x1 - x0} x {y1 - y0} m), centre {cx},{cy}")
+            save_data = self.vars["save_data"].get()
+            plan = j.get("plan")
+            work = None                      # temporary folder (plan only)
             try:
                 out_root.mkdir(parents=True, exist_ok=True)
                 site = j["site_dir"]
                 site.mkdir(parents=True, exist_ok=True)
-                tmp = site / STAGE1_TMP
-                if tmp.exists():
-                    shutil.rmtree(tmp, ignore_errors=True)
-                args = ["--centre", f"{cx},{cy}", "--width", str(x1 - x0),
-                        "--height", str(y1 - y0), "--data", data,
-                        "--output", str(site), "--name", STAGE1_TMP]
-                if reindex:
-                    args.append("--reindex")
-                    reindex = False          # only once per run
-                self._log("Stage 1: extracting site from OS tiles", "head")
-                rc, lines = self._exec(script_command(sdir / STAGE1, args))
-                if self.stop_flag.is_set():
-                    break
-                if rc != 0:
-                    raise RuntimeError(f"stage 1 failed (exit code {rc})")
-                self._lift_stage1_output(tmp, site)
-                self._write_extent_record(site, j, cx, cy)
-                if self.vars["run_stage2"].get():
+                # The OS data goes in the output folder if it's being kept;
+                # if it's only needed for the plan, in a temporary folder
+                # that is removed afterwards.
+                if save_data:
+                    gml_dir = site
+                elif plan:
+                    work = Path(tempfile.mkdtemp(prefix="os_shapefile_tool_"))
+                    gml_dir = work
+                else:
+                    gml_dir = None
+                if gml_dir is not None:
+                    tmp = gml_dir / STAGE1_TMP
+                    if tmp.exists():
+                        shutil.rmtree(tmp, ignore_errors=True)
+                    args = ["--centre", f"{cx},{cy}", "--width", str(x1 - x0),
+                            "--height", str(y1 - y0), "--data", data,
+                            "--output", str(gml_dir), "--name", STAGE1_TMP]
+                    if reindex:
+                        args.append("--reindex")
+                        reindex = False          # only once per run
+                    self._log("Stage 1: extracting site from OS tiles"
+                              + ("" if save_data else
+                                 " (for the plan only; not kept)"), "head")
+                    rc, lines = self._exec(script_command(sdir / STAGE1, args))
+                    if self.stop_flag.is_set():
+                        break
+                    if rc != 0:
+                        raise RuntimeError(f"stage 1 failed (exit code {rc})")
+                    self._lift_stage1_output(tmp, gml_dir)
+                else:
+                    self._log("OS MasterMap data not needed (not saved, no "
+                              "plan): stage 1 skipped")
+                if save_data:
+                    self._write_extent_record(site, j, cx, cy)
+                if save_data and self.vars["run_stage2"].get():
                     self._log("Stage 2: styling into MM_* tables", "head")
                     s2 = [str(site)] + (["--keep-mif"]
                                         if self.vars["keep_mif"].get() else [])
@@ -1581,10 +1622,9 @@ class App(tk.Tk):
                                   "(see above); MasterMap tables are fine.",
                                   "warn")
                         tab_failed.append(j["name"])
-                plan = j.get("plan")
                 if plan:
                     self._log("Site plan (PDF/JPG)", "head")
-                    p_args = ["--gml", str(site / "site.gml.gz"),
+                    p_args = ["--gml", str(gml_dir / "site.gml.gz"),
                               "--shapefile", j["files"][0],
                               "--title", plan["title"],
                               "--drawing", plan["drawing"],
@@ -1605,11 +1645,12 @@ class App(tk.Tk):
                     if self.stop_flag.is_set():
                         break
                     if rc != 0:
-                        self._log("The site plan had problems (see above); "
-                                  "the MapInfo tables are fine.", "warn")
+                        self._log("The site plan had problems (see above)"
+                                  + ("; the MapInfo tables are fine." if save_data
+                                     else "."), "warn")
                         plan_failed.append(j["name"])
                 # Only now: the plan needs site.gml.gz too.
-                if self.vars["delete_gml"].get() and \
+                if save_data and self.vars["delete_gml"].get() and \
                         (self.vars["run_stage2"].get() or plan):
                     try:
                         (site / "site.gml.gz").unlink()
@@ -1626,6 +1667,8 @@ class App(tk.Tk):
                 tmp = j["site_dir"] / STAGE1_TMP
                 if tmp.exists():
                     shutil.rmtree(tmp, ignore_errors=True)
+                if work is not None:
+                    shutil.rmtree(work, ignore_errors=True)
                 lines_, self.job_log = self.job_log, None
                 if self.vars["save_log"].get() and j["site_dir"].is_dir():
                     try:

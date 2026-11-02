@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.5.1. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.6.0. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -90,7 +90,13 @@ The window has two tabs:
    With *One site per shapefile*, each subfolder is named after its shapefile.
    If several per-shapefile sites would land in the same folder, they get
    subfolders anyway, as their MM_* tables would otherwise overwrite each other.
-6. **Style into MM_* tables (stage 2)**: ticked by default.
+6. **Save the OS MasterMap data in the output folder** (ticked): untick it
+   to get only a plan (and/or the shapefile TAB) without the OS data. The
+   data is still extracted for the plan, but into a temporary folder that
+   is removed afterwards. If neither the data nor a plan is wanted, stage 1
+   isn't run at all.
+   **Style into MM_* tables (stage 2)**: ticked by default (only applies
+   when the data is saved).
    **Copy input shapefile(s) to the output folder as MapInfo TAB**: ticked by
    default (see below).
 7. **PDF/JPG site plan (one shapefile only)**: see *Site plan* below.
@@ -207,6 +213,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.6.0 | 'Save the OS MasterMap data' tick box: untick to get just the plan and/or shapefile TAB (OS data for the plan is extracted to a temporary folder and removed) |
 | 1.5.1 | Key: hollow boxes (in the outline colour) instead of lines when the site is shown as an outline |
 | 1.5.0 | Site plan: optional key listing each title number, optionally with its area in hectares and acres; title number field set once for colours and key |
 | 1.4.0 | Site plan: OS lines in their normal colours; text drawn above the site boundary; red outline or pink fill; optional colour per title number with a key; drawing-number suffix (default `-01`); orientation setting (auto/portrait/landscape); title box stays A4 size in the bottom-left on landscape and larger sheets; scale bar length per scale and paper |

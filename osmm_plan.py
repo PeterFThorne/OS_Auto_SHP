@@ -12,10 +12,17 @@ date, north point, logo, address and copyright).
                         --output <folder\\file name> [--format pdf|jpg|both]
                         [--template plan_template.json]
 
+                        [--orientation auto|portrait|landscape]
+                        [--style outline|fill] [--colour-by FIELD]
+
 Scale and paper are chosen automatically: the largest Land Registry scale
-(1:500, then 1:1,250, then 1:2,500) at which the shapefile fits on A4,
-portrait or landscape. If it doesn't fit on A4 even at 1:2,500, A3 is tried,
-then A2, A1 and A0.
+(1:500, then 1:1,250, then 1:2,500) at which the shapefile fits on A4
+(portrait or landscape, or only the one asked for). If it doesn't fit on A4
+even at 1:2,500, A3 is tried, then A2, A1 and A0.
+
+The title box is always A4-portrait wide. On A4 portrait it fills the bottom
+of the sheet; on landscape and larger sheets it sits in the bottom-left
+corner and the map fills the rest, with the site kept clear of the box.
 
 PDF needs only the Python standard library (this file writes the PDF
 itself). JPG needs Pillow (pip install pillow).
@@ -64,6 +71,16 @@ ADDRESS_BASES = (24.0, 15.8)                            # 7 pt Helvetica
 RIGHT_DX = 78.5          # right column centre, from the right paper edge
 RIGHT_BASES = (57.9, 49.6, 41.4, 33.1, 24.8)           # 7 pt Times
 
+# Title box: always the width of the A4 portrait frame, in the bottom-left.
+TBOX_W = 210 * 72 / 25.4 - 2 * FRAME_INSET
+
+# Scale bar length (m) for each scale and paper.
+SCALEBAR_M = {
+    500: {"A4": 20, "A3": 25, "A2": 40, "A1": 50, "A0": 60},
+    1250: {"A4": 50, "A3": 60, "A2": 100, "A1": 120, "A0": 150},
+    2500: {"A4": 80, "A3": 100, "A2": 150, "A1": 200, "A0": 250},
+}
+
 DEFAULT_TEMPLATE = {
     "logo": "plan_logo.jpg",
     "address": ["Little Cutsey, Cutsey, Taunton. Somerset. TA3 7NY",
@@ -75,49 +92,87 @@ DEFAULT_TEMPLATE = {
                   "Licence No. VA 100033416"],
     "boundary_colour": "#ff0000",
     "boundary_width_pt": 1.5,
+    "fill_colour": "#f9b9cf",          # 'pink fill' style
+    "fill_edge_colour": "#e0457b",     # thin edge round the pink fill
+    # Colours used when each title number / polygon gets its own colour
+    # (in order of first appearance). Fill style uses a pale tint of each.
+    "title_colours": ["#ff0000", "#0057e7", "#00a651", "#ff8c00", "#8e44ad",
+                      "#00a5b5", "#c2185b", "#8d6e00", "#4caf50", "#3f51b5"],
 }
 
 # --------------------------------------------------------------------------
 # Choosing scale and paper
 # --------------------------------------------------------------------------
 
-def map_window_pt(paper_w_pt, paper_h_pt):
-    """Map frame (x0, y0, x1, y1) in points for a sheet of this size."""
-    return (FRAME_INSET, STRIP_TOP, paper_w_pt - FRAME_INSET,
+def frame_pt(paper_w_pt, paper_h_pt):
+    """Inside of the border (x0, y0, x1, y1) in points; the map fills it."""
+    return (FRAME_INSET, FRAME_INSET, paper_w_pt - FRAME_INSET,
             paper_h_pt - FRAME_INSET)
 
 
-def choose_layout(bbox):
+def title_box_pt():
+    """The title box: A4-portrait wide, in the bottom-left corner."""
+    return (FRAME_INSET, FRAME_INSET, FRAME_INSET + TBOX_W, STRIP_TOP)
+
+
+def _place(w_pt, h_pt, frame, box, margin):
+    """Where the site's centre can go on the sheet (x, y in points) so it is
+    inside the frame and clear of the title box, or None. Two areas are
+    tried: above the box (full width) and to the right of it (full height);
+    the one that keeps the site nearer the middle of the sheet wins."""
+    fx0, fy0, fx1, fy1 = frame
+    areas = [(fx0 + margin, box[3] + margin, fx1 - margin, fy1 - margin),
+             (box[2] + margin, fy0 + margin, fx1 - margin, fy1 - margin)]
+    mid = ((fx0 + fx1) / 2, (fy0 + fy1) / 2)
+    best = None
+    for ax0, ay0, ax1, ay1 in areas:
+        if ax1 - ax0 >= w_pt and ay1 - ay0 >= h_pt:
+            c = ((ax0 + ax1) / 2, (ay0 + ay1) / 2)
+            d = math.hypot(c[0] - mid[0], c[1] - mid[1])
+            if best is None or d < best[0]:
+                best = (d, c)
+    return best[1] if best else None
+
+
+def choose_layout(bbox, orientation="auto"):
     """bbox = (minE, minN, maxE, maxN) of the site in metres.
-    Returns a dict describing the plan, or raises ValueError if the site is
-    too big even for A0 at 1:2,500."""
+    orientation: "auto" (portrait first, then landscape), "portrait" or
+    "landscape". Returns a dict describing the plan, or raises ValueError if
+    the site is too big even for A0 at 1:2,500."""
     w = bbox[2] - bbox[0]
     h = bbox[3] - bbox[1]
+    ce, cn = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    orients = {"portrait": ["portrait"], "landscape": ["landscape"]}.get(
+        orientation, ["portrait", "landscape"])
+    box = title_box_pt()
     for name, pw, ph in PAPERS:
         for scale in SCALES:
-            for orient, (sw, sh) in (("portrait", (pw, ph)),
-                                     ("landscape", (ph, pw))):
-                x0, y0, x1, y1 = map_window_pt(sw * PT_PER_MM, sh * PT_PER_MM)
-                win_w_m = (x1 - x0) / PT_PER_MM * scale / 1000
-                win_h_m = (y1 - y0) / PT_PER_MM * scale / 1000
-                room = 2 * FIT_MARGIN_MM * scale / 1000
-                if w <= win_w_m - room and h <= win_h_m - room:
-                    ce, cn = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-                    return {
-                        "paper": name, "orientation": orient, "scale": scale,
-                        "paper_mm": (sw, sh),
-                        "window_pt": (x0, y0, x1, y1),
-                        "ground": (ce - win_w_m / 2, cn - win_h_m / 2,
-                                   ce + win_w_m / 2, cn + win_h_m / 2),
-                    }
-    raise ValueError("the site is too large for an A0 sheet at 1:2,500")
+            k = 1000 / scale * PT_PER_MM          # points per ground metre
+            for orient in orients:
+                sw, sh = (pw, ph) if orient == "portrait" else (ph, pw)
+                frame = frame_pt(sw * PT_PER_MM, sh * PT_PER_MM)
+                c = _place(w * k, h * k, frame, box, FIT_MARGIN_MM * PT_PER_MM)
+                if c is None:
+                    continue
+                # Ground coordinates of the frame corners, with the site's
+                # centre at sheet position c.
+                g0 = ce - (c[0] - frame[0]) / k
+                gy0 = cn - (c[1] - frame[1]) / k
+                return {
+                    "paper": name, "orientation": orient, "scale": scale,
+                    "paper_mm": (sw, sh), "frame_pt": frame, "box_pt": box,
+                    "ground": (g0, gy0, g0 + (frame[2] - frame[0]) / k,
+                               gy0 + (frame[3] - frame[1]) / k),
+                }
+    raise ValueError("the site is too large for an A0 sheet at 1:2,500"
+                     + ("" if orientation == "auto" else f" ({orientation})"))
 
 
-def plan_ground_box(bbox):
+def plan_ground_box(bbox, orientation="auto"):
     """The ground area the plan's map frame will show (for the GUI, so it can
     make sure that much OS data is extracted). None if it won't fit."""
     try:
-        return choose_layout(bbox)["ground"]
+        return choose_layout(bbox, orientation)["ground"]
     except ValueError:
         return None
 
@@ -145,13 +200,55 @@ def parse_hex(colour):
     return tuple(int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))
 
 
+def _sidecar(shp, ext):
+    p = Path(shp).with_suffix(ext)
+    if p.exists():
+        return p
+    for q in Path(shp).parent.glob(Path(shp).stem + ".*"):
+        if q.suffix.lower() == ext:
+            return q
+    return None
+
+
+def read_dbf(shp):
+    """Attribute rows of the shapefile as a list of dicts ([] if no .dbf)."""
+    dbf = _sidecar(shp, ".dbf")
+    if dbf is None:
+        return []
+    enc = "cp1252"
+    cpg = _sidecar(shp, ".cpg")
+    if cpg:
+        txt = cpg.read_text(errors="ignore").strip().lower()
+        if "utf" in txt and "8" in txt:
+            enc = "utf-8"
+    data = dbf.read_bytes()
+    count = struct.unpack_from("<I", data, 4)[0]
+    header_len, rec_len = struct.unpack_from("<HH", data, 8)
+    fields, pos = [], 32
+    while pos < header_len - 1 and data[pos] != 0x0D:
+        name = data[pos:pos + 11].split(b"\0")[0].decode("latin-1").strip()
+        fields.append((name, data[pos + 16]))
+        pos += 32
+    rows = []
+    for i in range(count):
+        off = header_len + i * rec_len + 1          # skip deletion flag
+        row = {}
+        for name, length in fields:
+            row[name] = data[off:off + length].decode(enc, "replace").strip()
+            off += length
+        rows.append(row)
+    return rows
+
+
 def read_shapefile(path):
-    """Shapefile geometry as (polygons/lines as lists of rings or parts,
-    points). Only X/Y are used."""
+    """Shapefile as a list of records plus the overall bbox.
+    Each record: {"parts": [[(x, y), ...], ...], "points": [...],
+    "closed": bool, "attrs": {...}}. Only X/Y are used."""
     data = Path(path).read_bytes()
     if len(data) < 100 or struct.unpack_from(">i", data, 0)[0] != 9994:
         raise ValueError(f"{path} is not a valid .shp file")
-    parts, points, closed = [], [], False
+    attrs = read_dbf(path)
+    records = []
     pos = 100
     while pos + 8 <= len(data):
         _, words = struct.unpack_from(">ii", data, pos)
@@ -160,12 +257,14 @@ def read_shapefile(path):
             break
         rtype = struct.unpack_from("<i", data, start)[0]
         p = start + 4
+        rec = {"parts": [], "points": [], "closed": rtype in (5, 15, 25, 31),
+               "attrs": attrs[len(records)] if len(records) < len(attrs) else {}}
         if rtype in (1, 11, 21):
-            points.append(struct.unpack_from("<2d", data, p))
+            rec["points"].append(struct.unpack_from("<2d", data, p))
         elif rtype in (8, 18, 28):
             npts = struct.unpack_from("<i", data, p + 32)[0]
-            points += [struct.unpack_from("<2d", data, p + 36 + 16 * i)
-                       for i in range(npts)]
+            rec["points"] += [struct.unpack_from("<2d", data, p + 36 + 16 * i)
+                              for i in range(npts)]
         elif rtype in (3, 13, 23, 5, 15, 25, 31):
             nparts, npts = struct.unpack_from("<2i", data, p + 32)
             q = p + 40
@@ -175,14 +274,16 @@ def read_shapefile(path):
             starts.append(npts)
             for a, b in zip(starts, starts[1:]):
                 if b > a:
-                    parts.append(xy[a:b])
-            closed = closed or rtype in (5, 15, 25, 31)
+                    rec["parts"].append(xy[a:b])
+        records.append(rec)
         pos = end
-    xs = [x for part in parts for x, _ in part] + [x for x, _ in points]
-    ys = [y for part in parts for _, y in part] + [y for _, y in points]
+    xs = [x for r in records for part in r["parts"] for x, _ in part] + \
+         [x for r in records for x, _ in r["points"]]
+    ys = [y for r in records for part in r["parts"] for _, y in part] + \
+         [y for r in records for _, y in r["points"]]
     if not xs:
         raise ValueError(f"{path} contains no shapes")
-    return parts, points, closed, (min(xs), min(ys), max(xs), max(ys))
+    return records, (min(xs), min(ys), max(xs), max(ys))
 
 
 # --------------------------------------------------------------------------
@@ -347,6 +448,12 @@ class Drawing:
     def polygon(self, pts, fill):
         self.ops.append(("poly", pts, fill))
 
+    def fill_rings(self, rings, fill):
+        """Fill a polygon given as rings (holes punched by the even-odd rule)."""
+        rings = [r for r in rings if len(r) >= 3]
+        if rings:
+            self.ops.append(("rings", rings, fill))
+
     def text(self, x, y, string, font, size, angle=0.0, colour=(0, 0, 0),
              align="left", oblique=False):
         """(x, y) is the baseline point given by `align` (left/centre/right).
@@ -479,6 +586,14 @@ def write_pdf(drawing, path, title=""):
             seg = [f"{f2(pts[0][0])} {f2(pts[0][1])} m"]
             seg += [f"{f2(x)} {f2(y)} l" for x, y in pts[1:]]
             out.append("%s %s %s rg %s h f" % (*(f2(c) for c in fill), " ".join(seg)))
+        elif kind == "rings":
+            _, rings, fill = op
+            seg = []
+            for ring in rings:
+                seg.append(f"{f2(ring[0][0])} {f2(ring[0][1])} m")
+                seg += [f"{f2(x)} {f2(y)} l" for x, y in ring[1:]]
+                seg.append("h")
+            out.append("%s %s %s rg %s f*" % (*(f2(c) for c in fill), " ".join(seg)))
         elif kind == "text":
             _, x, y, string, font, size, angle, colour, oblique, align = op
             x, y = _aligned(x, y, angle, text_width(string, font, size), align)
@@ -631,6 +746,15 @@ def write_jpg(drawing, path, dpi):
         elif kind == "poly":
             _, pts, fill = op
             draw.polygon([P(x, y) for x, y in pts], fill=rgb(fill))
+        elif kind == "rings":
+            _, rings, fill = op
+            from PIL import ImageChops
+            mask = None
+            for ring in rings:
+                m = Image.new("1", (W, H), 0)
+                ImageDraw.Draw(m).polygon([P(x, y) for x, y in ring], fill=1)
+                mask = m if mask is None else ImageChops.logical_xor(mask, m)
+            layer.paste(Image.new("RGB", (W, H), rgb(fill)), (0, 0), mask)
         elif kind == "text":
             _, x, y, string, font, size, angle, colour, oblique, align = op
             size_px = size * k
@@ -680,39 +804,42 @@ def jpg_dpi(paper_mm):
 # --------------------------------------------------------------------------
 
 def mapinfo_pen(pen_s):
-    """'Pen (w,pattern,colour)' -> (width pt, dash list or None, visible)."""
+    """'Pen (w,pattern,colour)' -> (width pt, dash list or None, visible,
+    colour as 0-1 RGB)."""
     m = re.match(r"Pen \((\d+),(\d+),(\d+)\)", pen_s)
-    w, pattern = int(m.group(1)), int(m.group(2))
+    w, pattern, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
     # Heavier than on screen, to match the printed InterpOSe/MapInfo plans
     width = 0.7 if w < 10 else max(0.45, (w - 10) / 10)
     dash = {3: [0.6, 1.4], 4: [3.0, 2.0], 5: [0.8, 1.2], 6: [4, 1.5, 0.8, 1.5],
             7: [6, 2], 8: [6, 2, 1, 2]}.get(pattern)
-    return width, dash, pattern != 1
+    colour = ((c >> 16 & 255) / 255, (c >> 8 & 255) / 255, (c & 255) / 255)
+    return width, dash, pattern != 1, colour
 
 
 def draw_os(d, gml, to_paper, scale, log):
-    """OS MasterMap linework, symbols and text, all in black."""
-    black = (0, 0, 0)
+    """OS MasterMap linework, symbols and tree patterns, in the same colours
+    as the MM_* tables (e.g. water in blue). Returns the text, to be drawn
+    later so it sits on top of the site boundary."""
     report = stage2.Report()
-    map_font_path = find_font(MAP_FONT_FILES)
-    map_font = TTF(map_font_path) if map_font_path else "Helvetica"
-    if map_font_path:
-        log(f"  map text font: {map_font_path.name}")
     texts = []
     n = 0
+
+    def pen_line(parts, pen_s):
+        width, dash, vis, colour = mapinfo_pen(pen_s)
+        if vis:
+            for part in parts:
+                d.line([to_paper(*p) for p in part], width, colour, dash)
+
     for f in stage2.read_features(gml):
         n += 1
         groups, terms = f.all("descriptiveGroup"), f.all("descriptiveTerm")
         if f.cls == "TopographicLine":
-            pen_s = stage2.classify_detail(groups, terms, f.one("make"),
-                                           f.one("physicalPresence"), report)
-            width, dash, vis = mapinfo_pen(pen_s)
-            if vis:
-                for part in f.parts():
-                    d.line([to_paper(*p) for p in part], width, black, dash)
+            pen_line(f.parts(), stage2.classify_detail(
+                groups, terms, f.one("make"), f.one("physicalPresence"), report))
         elif f.cls == "BoundaryLine":
             for part in f.parts():
-                d.line([to_paper(*p) for p in part], 0.5, black, [4, 1.5, 0.8, 1.5])
+                d.line([to_paper(*p) for p in part], 0.5, (0, 0, 0),
+                       [4, 1.5, 0.8, 1.5])
         elif f.cls == "CartographicSymbol":
             pts = f.parts()
             if not pts:
@@ -720,17 +847,17 @@ def draw_os(d, gml, to_paper, scale, log):
             x, y = pts[0][0]
             angle = float(f.one("orientation", "0") or 0) / 10.0
             code = int(f.one("featureCode", "0") or 0)
-            template = stage2.SYMBOLS[code][2] if code in stage2.SYMBOLS \
-                else stage2.SYMBOL_FALLBACK
-            for part in stage2.place(template, x, y, angle):
-                d.line([to_paper(*p) for p in part], 0.5, black)
+            if code in stage2.SYMBOLS:
+                _legend, pen_s, template = stage2.SYMBOLS[code]
+            else:
+                pen_s, template = "Pen (1,2,0)", stage2.SYMBOL_FALLBACK
+            pen_line(stage2.place(template, x, y, angle), pen_s)
         elif f.cls == "TopographicArea":
             rings = f.rings()
             if not rings:
                 continue
             if "Landform" in groups and "Cliff" in terms:
-                for part in stage2.cliff_hatch(rings):
-                    d.line([to_paper(*p) for p in part], 0.3, black)
+                pen_line(stage2.cliff_hatch(rings), stage2.TREE_PENS["0396 Cliff"])
                 continue
             if "Natural Environment" in groups:
                 key = frozenset(t for t in terms if t in stage2.VEG_GLYPHS)
@@ -742,12 +869,14 @@ def draw_os(d, gml, to_paper, scale, log):
                         stage2.TREE_ABBREV[t] for t in stage2.TREE_ABBREV
                         if t in key))[:30]
                     tlegend = tlegend[:5] + tlegend[5:6].upper() + tlegend[6:]
+                colour = "#808080" if tlegend.startswith("0385") else "#669966"
+                tpen = stage2.TREE_PENS.get(tlegend) or stage2.pen(
+                    12 if tlegend in stage2.TREE_THIN else 1, 2, colour)
                 try:
                     parts = stage2.tree_pattern(rings, tlegend, terms)
                 except Exception:
                     parts = []
-                for part in parts:
-                    d.line([to_paper(*p) for p in part], 0.3, black)
+                pen_line(parts, tpen)
         elif f.cls == "CartographicText":
             pts = f.parts()
             string = f.one("textString")
@@ -756,17 +885,24 @@ def draw_os(d, gml, to_paper, scale, log):
             x, y = pts[0][0]
             rule = next((stage2.TEXT_RULES[g] for g in groups
                          if g in stage2.TEXT_RULES), None)
-            italic = bool(rule and rule[3] == 2)
-            factor = rule[4] if rule else 1.15     # stage 2's text size factor
-            height = float(f.one("height", "1") or 1) * factor
-            angle = float(f.one("orientation", "0") or 0) / 10.0
-            anchor = int(f.one("anchorPosition", "0") or 0)
-            texts.append((string, x, y, height, angle, anchor, italic))
+            colour = rule[1] if rule else "#333333"
+            if colour.lower() == "#ff0000":      # keep red for the site only
+                colour = "#333333"
+            texts.append((string, x, y,
+                          float(f.one("height", "1") or 1) * (rule[4] if rule else 1.15),
+                          float(f.one("orientation", "0") or 0) / 10.0,
+                          int(f.one("anchorPosition", "0") or 0),
+                          bool(rule and rule[3] == 2), parse_hex(colour)))
+    return n, texts
 
-    # Text last, so it sits on top of the linework.
-    font = map_font
+
+def draw_os_text(d, texts, to_paper, scale, log):
+    map_font_path = find_font(MAP_FONT_FILES)
+    font = TTF(map_font_path) if map_font_path else "Helvetica"
+    if map_font_path:
+        log(f"  map text font: {map_font_path.name}")
     asc = (font.cap_height / font.upem) if isinstance(font, TTF) else 0.72
-    for string, x, y, height, angle, anchor, italic in texts:
+    for string, x, y, height, angle, anchor, italic, colour in texts:
         size = max(4.0, height * 1000 / scale * PT_PER_MM)   # OS height = text size
         w = text_width(string, font, size)
         u = (0.0, w / 2, w)[min(anchor // 3, 2)]
@@ -774,20 +910,17 @@ def draw_os(d, gml, to_paper, scale, log):
         a = math.radians(angle)
         c, s = math.cos(a), math.sin(a)
         px, py = to_paper(x, y)
-        bx = px - (u * c - v * s)
-        by = py - (u * s + v * c)
-        d.text(bx, by, string, font, size, angle, black, oblique=italic)
-    return n
+        d.text(px - (u * c - v * s), py - (u * s + v * c), string, font, size,
+               angle, colour, oblique=italic)
 
 
-def nice_scalebar(scale):
-    """Total length (m) for a bar of about 40 mm on paper."""
-    return {500: 20, 1250: 50, 2500: 100}.get(scale) or \
-        round(40 * scale / 1000, -1)
+def nice_scalebar(scale, paper="A4"):
+    """Scale bar length (m) for this scale and paper size."""
+    return SCALEBAR_M.get(scale, {}).get(paper) or round(40 * scale / 1000, -1)
 
 
-def draw_scalebar(d, x, y, scale):
-    total = nice_scalebar(scale)
+def draw_scalebar(d, x, y, scale, paper="A4"):
+    total = nice_scalebar(scale, paper)
     length = total * 1000 / scale * PT_PER_MM
     h = 4.5
     pad = 6
@@ -822,59 +955,127 @@ def draw_compass(d, cx, cy):
         d.text(cx + dx, cy + dy, ch, "Times-Roman", 5.5, align="centre")
 
 
+def _tint(colour, amount=0.62):
+    """A pale version of a colour (for fills)."""
+    return tuple(c + (1 - c) * amount for c in colour)
+
+
+def _boundary_colours(records, template, style, colour_by):
+    """Colour (outline or fill) for each record, and legend entries."""
+    single = parse_hex(template.get("boundary_colour", "#ff0000")) \
+        if style == "outline" else parse_hex(template.get("fill_colour", "#f9b9cf"))
+    if not colour_by:
+        return [single] * len(records), []
+    palette = [parse_hex(c) for c in template.get("title_colours", [])] or [single]
+    keys, colours = {}, []
+    for r in records:
+        value = r["attrs"].get(colour_by, "") or "(blank)"
+        if value not in keys:
+            keys[value] = palette[len(keys) % len(palette)]
+        base = keys[value]
+        colours.append(base if style == "outline" else _tint(base))
+    legend = [(v, c if style == "outline" else _tint(c)) for v, c in keys.items()]
+    return colours, legend
+
+
+def draw_legend(d, x1, y0, entries, field, style):
+    """Key for the colours, bottom-right of the map."""
+    entries = entries[:14]
+    label = "Title No." if field.lower() in ("title_no", "title", "titleno") else field
+    line_h, size = 10, 7
+    w = max(text_width(str(v), "Helvetica", size) for v, _ in entries) + 26
+    w = max(w, text_width(label, "Helvetica", size) + 12)
+    h = line_h * (len(entries) + 1) + 6
+    x0 = x1 - w
+    d.rect(x0, y0, x1, y0 + h, fill=(1, 1, 1), stroke=(0, 0, 0), width=0.5)
+    d.text(x0 + 6, y0 + h - 10, label, "Helvetica", size)
+    for i, (value, colour) in enumerate(entries):
+        yy = y0 + h - 10 - line_h * (i + 1)
+        if style == "outline":
+            d.line([(x0 + 6, yy + 2.5), (x0 + 18, yy + 2.5)], 1.5, colour)
+        else:
+            d.rect(x0 + 6, yy - 0.5, x0 + 18, yy + 6, fill=colour,
+                   stroke=(0.3, 0.3, 0.3), width=0.3)
+        d.text(x0 + 22, yy, str(value), "Helvetica", size)
+
+
 def build_plan(gml, shapefile, title, drawing_no, template, log=print,
-               today=None):
-    parts, points, closed, bbox = read_shapefile(shapefile)
-    lay = choose_layout(bbox)
-    scale = lay["scale"]
+               today=None, orientation="auto", style="outline", colour_by=""):
+    records, bbox = read_shapefile(shapefile)
+    if colour_by and records and colour_by not in records[0]["attrs"]:
+        fields = ", ".join(records[0]["attrs"]) or "none"
+        log(f"  Warning: the shapefile has no '{colour_by}' field (fields: "
+            f"{fields}); using one colour")
+        colour_by = ""
+    lay = choose_layout(bbox, orientation)
+    scale, paper = lay["scale"], lay["paper"]
     pw, ph = (v * PT_PER_MM for v in lay["paper_mm"])
     d = Drawing(pw, ph)
-    x0, y0, x1, y1 = lay["window_pt"]
+    fx0, fy0, fx1, fy1 = lay["frame_pt"]
+    bx0, by0, bx1, by1 = lay["box_pt"]
     g0, gy0 = lay["ground"][0], lay["ground"][1]
     k = 1000 / scale * PT_PER_MM               # points per metre on the ground
 
     def to_paper(e, n):
-        return (x0 + (e - g0) * k, y0 + (n - gy0) * k)
+        return (fx0 + (e - g0) * k, fy0 + (n - gy0) * k)
 
-    log(f"  plan: 1:{scale:,} on {lay['paper']} {lay['orientation']}")
-
-    # --- map: OS data in black, site in red, scale bar ---
-    d.clip(x0, y0, x1, y1)
-    n = draw_os(d, gml, to_paper, scale, log)
-    log(f"  {n} OS features drawn")
-    red = parse_hex(template.get("boundary_colour", "#ff0000"))
+    log(f"  plan: 1:{scale:,} on {paper} {lay['orientation']}"
+        + (", site in pink fill" if style == "fill" else ""))
+    colours, legend = _boundary_colours(records, template, style, colour_by)
     bw = float(template.get("boundary_width_pt", 1.5))
-    for part in parts:
-        d.line([to_paper(*p) for p in part], bw, red, closed=closed)
-    for e, nn in points:
-        px, py = to_paper(e, nn)
-        d.line([(px + 3 * math.cos(t / 12 * 2 * math.pi),
-                 py + 3 * math.sin(t / 12 * 2 * math.pi)) for t in range(13)],
-               bw, red, closed=True)
-    draw_scalebar(d, x0 + 22, y0 + 20, scale)
+
+    # --- map: fill (under everything), OS lines, outline, OS text on top ---
+    d.clip(fx0, fy0, fx1, fy1)
+    if style == "fill":
+        for r, colour in zip(records, colours):
+            if r["closed"]:
+                d.fill_rings([[to_paper(*p) for p in part] for part in r["parts"]],
+                             colour)
+    n, texts = draw_os(d, gml, to_paper, scale, log)
+    log(f"  {n} OS features drawn")
+    for r, colour in zip(records, colours):
+        if style == "fill" and r["closed"]:
+            edge = parse_hex(template.get("fill_edge_colour", "#e0457b")) \
+                if not colour_by else tuple(c * 0.75 for c in colour)
+            for part in r["parts"]:
+                d.line([to_paper(*p) for p in part], 0.6, edge, closed=True)
+            continue
+        line_colour = colour if style == "outline" else \
+            parse_hex(template.get("boundary_colour", "#ff0000"))
+        for part in r["parts"]:
+            d.line([to_paper(*p) for p in part], bw, line_colour, closed=r["closed"])
+        for e, nn in r["points"]:
+            px, py = to_paper(e, nn)
+            d.line([(px + 3 * math.cos(t / 12 * 2 * math.pi),
+                     py + 3 * math.sin(t / 12 * 2 * math.pi)) for t in range(13)],
+                   bw, line_colour, closed=True)
+    draw_os_text(d, texts, to_paper, scale, log)
+    draw_scalebar(d, fx0 + 22, by1 + 20, scale, paper)
+    if legend and len(legend) > 1:
+        draw_legend(d, fx1 - 8, (fy0 if bx1 < fx1 - 120 else by1) + 8, legend,
+                    colour_by, style)
     d.unclip()
 
-    # --- frame and title strip ---
-    d.rect(FRAME_INSET, FRAME_INSET, pw - FRAME_INSET, STRIP_TOP,
-           fill=(1, 1, 1), stroke=None)
-    d.rect(FRAME_INSET, FRAME_INSET, pw - FRAME_INSET, ph - FRAME_INSET,
-           stroke=(0, 0, 0), width=FRAME_WIDTH)
-    d.line([(FRAME_INSET, STRIP_TOP), (pw - FRAME_INSET, STRIP_TOP)],
-           FRAME_WIDTH, (0, 0, 0))
-    cx = pw / 2
+    # --- border and title box (A4 width, bottom-left) ---
+    d.rect(bx0, by0, bx1, by1, fill=(1, 1, 1), stroke=None)
+    d.rect(fx0, fy0, fx1, fy1, stroke=(0, 0, 0), width=FRAME_WIDTH)
+    d.line([(bx0, by1), (bx1, by1)], FRAME_WIDTH, (0, 0, 0))
+    if bx1 < fx1 - 0.5:
+        d.line([(bx1, by0), (bx1, by1)], FRAME_WIDTH, (0, 0, 0))
+    cx = (bx0 + bx1) / 2                      # middle of the title box
     if title:
         size = 17
-        while size > 9 and text_width(title, "Times-Roman", size) > pw - 2 * FRAME_INSET - 20:
+        while size > 9 and text_width(title, "Times-Roman", size) > TBOX_W - 20:
             size -= 0.5
         d.text(cx, TITLE_BASE, title, "Times-Roman", size, align="centre")
     today = today or datetime.date.today()
     ce, cn = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
     left = [f"Location: {grid_ref_6(ce, cn)}",
-            f"Scale 1:{scale:,} @ {lay['paper']}",
+            f"Scale 1:{scale:,} @ {paper}",
             f"Drawing No. {drawing_no}".rstrip(),
             f"Date {today:%d.%m.%y}"]
     for text, base in zip(left, LEFT_BASES):
-        d.text(FRAME_INSET + LEFT_X, base, text, "Times-Roman", 7, align="centre")
+        d.text(bx0 + LEFT_X, base, text, "Times-Roman", 7, align="centre")
     draw_compass(d, cx + COMPASS_DX, COMPASS_Y)
     logo = template.get("logo")
     if logo:
@@ -888,7 +1089,8 @@ def build_plan(gml, shapefile, title, drawing_no, template, log=print,
     for text, base in zip(template.get("address", []), ADDRESS_BASES):
         d.text(cx, base, text, "Helvetica", 7, align="centre")
     for text, base in zip(template.get("copyright", []), RIGHT_BASES):
-        d.text(pw - RIGHT_DX, base, text, "Times-Roman", 7, align="centre")
+        d.text(bx1 + FRAME_INSET - RIGHT_DX, base, text, "Times-Roman", 7,
+               align="centre")
     return d, lay
 
 
@@ -913,6 +1115,12 @@ def main(argv=None):
                    help="output file name, with or without .pdf/.jpg")
     p.add_argument("--format", choices=("pdf", "jpg", "both"), default="pdf")
     p.add_argument("--template", help="plan_template.json (company details)")
+    p.add_argument("--orientation", choices=("auto", "portrait", "landscape"),
+                   default="auto")
+    p.add_argument("--style", choices=("outline", "fill"), default="outline",
+                   help="site as a red outline, or a pink fill")
+    p.add_argument("--colour-by", default="",
+                   help="give each value of this field (e.g. title_no) its own colour")
     a = p.parse_args(argv)
 
     print("Making the site plan")
@@ -922,7 +1130,9 @@ def main(argv=None):
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         d, lay = build_plan(a.gml, a.shapefile, a.title, a.drawing,
-                            load_template(a.template))
+                            load_template(a.template),
+                            orientation=a.orientation, style=a.style,
+                            colour_by=a.colour_by.strip())
     except ValueError as exc:
         print(f"  ERROR: {exc}")
         sys.exit(1)

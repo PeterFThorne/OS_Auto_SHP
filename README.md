@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.3.0. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.4.0. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -51,7 +51,16 @@ The window has two tabs:
       space; it can always be re-extracted.
     - **Save the run log in the output folder** (off): writes
       `OS_Shapefile_Tool_log.txt` next to the tables, a record of what was run.
-  - *Site plan (PDF/JPG)*: save the plan as **PDF**, **JPG** or **Both**.
+  - *Site plan (PDF/JPG)*:
+    - Save the plan as **PDF**, **JPG** or **Both**.
+    - **Paper orientation**: *Auto* (portrait first, then landscape),
+      *Portrait* or *Landscape*.
+    - **Show the site as**: *Red outline* or *Pink fill*.
+    - **Give each title number its own colour, using the field** (off;
+      field `title_no`): each value gets its own colour, with a key on the
+      plan. The colours are in `plan_template.json` (`title_colours`).
+    - **Add to the drawing number** (`-01`): added to what you type in the
+      pop-up, so `ZAA29728` is printed as `ZAA29728-01`. Blank for none.
   - *Preview*: **Show the OpenStreetMap background** (on): untick if the
     map is slow or there's no internet.
 
@@ -137,21 +146,33 @@ MapInfo tables. It works with exactly one shapefile; with more in the list,
 Run stops with a message.
 
 When you press Run, a pop-up asks for the **plan title**, **drawing
-number**, **file name** (it follows the drawing number until you edit it)
-and **folder** (defaults to the output folder). The format (PDF, JPG or
-both) is set on the Settings tab.
+number** (the suffix from Settings, e.g. `-01`, is added and shown),
+**file name** (it follows the drawing number until you edit it) and
+**folder** (defaults to the output folder). Format, orientation and site
+style are set on the Settings tab.
 
 The plan (`osmm_plan.py`) follows the company layout:
 
-- OS MasterMap in black and white (the same linework, symbols, tree
-  patterns and text placement as the MM_* tables), the shapefile as a red
-  outline on top, and a black-and-white scale bar.
+- OS MasterMap linework, symbols and tree patterns in their normal colours
+  (as the MM_* tables: water blue, trees green, paths grey), the site as a
+  red outline or a pink fill, and a black-and-white scale bar.
+- Drawing order: pink fill (if used) at the bottom, then the OS linework,
+  then the red outline, then the OS text on top, so labels are never
+  hidden by the boundary.
+- The title box is always A4-portrait size. On A4 portrait it fills the
+  bottom of the sheet; on landscape and on A3 and larger it sits in the
+  bottom-left corner, the map fills the rest of the sheet, and the site is
+  placed so the box can't cover it.
+- Scale bar length depends on scale and paper: at 1:2,500 it is 80 m (A4),
+  100 m (A3), 150 m (A2), 200 m (A1), 250 m (A0); at 1:500 20/25/40/50/60 m;
+  at 1:1,250 50/60/100/120/150 m (`SCALEBAR_M` in `osmm_plan.py`).
 - Title strip: title, *Location* (6-figure grid reference of the site),
   *Scale ... @ A4*, *Drawing No.*, today's *Date* (dd.mm.yy), north point,
   logo, address and the OS copyright block.
 - **Scale and paper are chosen automatically**: the largest Land Registry
   scale (1:500, then 1:1,250, then 1:2,500) at which the shapefile fits on
-  A4, portrait or landscape, with at least 10 mm to spare. If it doesn't
+  A4 in the chosen orientation, clear of the title box with at least 10 mm
+  to spare. If it doesn't
   fit on A4 at 1:2,500, A3 is used, then A2, A1, A0. The preview's extent
   panel shows the choice (e.g. *plan: 1:500 @ A4 portrait*).
 - The OS data extracted is widened to cover the plan's whole map frame, so
@@ -162,8 +183,8 @@ The plan (`osmm_plan.py`) follows the company layout:
 - Fonts: Times and Arial/Helvetica for the title strip; the map text uses
   Century Gothic if it's installed (Windows/Office), otherwise Arial.
 - Company details (address lines, copyright lines, licence number), the
-  logo file, and the boundary colour and line width are in
-  `plan_template.json`.
+  logo file, the boundary colour and line width, the pink fill colours and
+  the per-title colours are in `plan_template.json`.
 
 ## How the box is built
 
@@ -176,6 +197,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.4.0 | Site plan: OS lines in their normal colours; text drawn above the site boundary; red outline or pink fill; optional colour per title number with a key; drawing-number suffix (default `-01`); orientation setting (auto/portrait/landscape); title box stays A4 size in the bottom-left on landscape and larger sheets; scale bar length per scale and paper |
 | 1.3.0 | PDF/JPG site plan: Land Registry scale and paper chosen automatically (1:500/1:1,250/1:2,500, A4 up to A0), OS data in black and white with the shapefile in red, scale bar, date, title strip from the company layout; pop-up for title, drawing number and file name; PDF/JPG/both on the Settings tab; one shapefile only |
 | 1.2.0 | Clearer preview (map drawn 1:1 so labels stay sharp; sharp text on scaled Windows displays; larger labels on white halos/panels; outline-only extraction box); shapefile drawn red. New settings: red/plain boundary TAB, keep MIF/MID, delete site.gml.gz, save run log, map background on/off |
 | 1.0.1 | Shapefile to TAB: fields with many decimal places (e.g. `area`, `perimeter`) are written as Float instead of failing; GDAL's real error message shown in the log; a table with missing records is reported as a failure |

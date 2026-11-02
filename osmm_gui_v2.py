@@ -44,8 +44,12 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.3.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.4.0"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.4.0  Site plan: OS lines in normal colours, text above the boundary,
+#          red outline or pink fill, colour per title number, drawing number
+#          suffix, orientation setting, A4-size title box bottom-left on
+#          bigger/landscape sheets, scale bar length per paper
 #   1.3.0  PDF/JPG site plan (osmm_plan.py): Land Registry scale and paper
 #          chosen automatically, OS data in black and white with the
 #          shapefile in red, company title strip; one shapefile only
@@ -89,6 +93,11 @@ DEFAULTS = {
     "shp_to_tab": True,
     "make_map": False,
     "plan_format": "pdf",      # site plan: "pdf", "jpg" or "both"
+    "plan_orientation": "auto",  # "auto", "portrait" or "landscape"
+    "plan_style": "outline",   # site as a red "outline" or a pink "fill"
+    "plan_colour_by": False,   # a different colour per title number
+    "plan_colour_field": "title_no",
+    "drawing_suffix": "-01",   # added to the drawing number on the plan
     "open_when_done": True,
     "data_root": r"M:\2500MMdata",
     "scripts_dir": "",
@@ -460,13 +469,15 @@ class App(tk.Tk):
 
         self.vars = {}
         for key in ("buffer_m", "output_root", "site_name", "data_root",
-                    "scripts_dir", "plan_format"):
+                    "scripts_dir", "plan_format", "plan_orientation",
+                    "plan_style", "plan_colour_field", "drawing_suffix"):
             self.vars[key] = tk.StringVar(value=self.settings.get(key, ""))
         for key in ("per_file", "same_as_input", "subfolder", "run_stage2",
                     "shp_to_tab",
                     "make_map",
                     "open_when_done", "reindex", "show_map", "keep_mif",
-                    "delete_gml", "save_log", "style_boundary"):
+                    "delete_gml", "save_log", "style_boundary",
+                    "plan_colour_by"):
             self.vars[key] = tk.BooleanVar(value=bool(self.settings.get(key)))
         if not self.vars["scripts_dir"].get():
             self.vars["scripts_dir"].set(str(app_dir()))
@@ -479,7 +490,8 @@ class App(tk.Tk):
 
         self.vars["buffer_m"].trace_add("write", lambda *_: self._refresh())
         for key in ("per_file", "subfolder", "same_as_input", "site_name",
-                    "output_root", "show_map", "make_map"):
+                    "output_root", "show_map", "make_map",
+                    "plan_orientation"):
             self.vars[key].trace_add("write", lambda *_: self._refresh())
         self.vars["same_as_input"].trace_add(
             "write", lambda *_: self._toggle_output())
@@ -670,18 +682,43 @@ class App(tk.Tk):
 
         planf = ttk.LabelFrame(settings_tab, text="Site plan (PDF/JPG)")
         planf.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Label(planf, text="Save the plan as:").grid(row=0, column=0,
-                                                        sticky="w", padx=6, pady=2)
-        for c, (val, text) in enumerate((("pdf", "PDF"), ("jpg", "JPG"),
-                                         ("both", "Both")), 1):
-            ttk.Radiobutton(planf, text=text, value=val,
-                            variable=self.vars["plan_format"])\
-                .grid(row=0, column=c, sticky="w", padx=8, pady=2)
-        ttk.Label(planf, foreground="#666", justify="left", text=(
-            "JPG needs the Pillow package (pip install pillow). The logo and "
-            "company details on the plan come from plan_logo.jpg and "
-            "plan_template.json in the pipeline scripts folder.")).grid(
-            row=1, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
+        planf.columnconfigure(3, weight=1)    # spare width goes here
+
+        def radios(r, label, key, options):
+            ttk.Label(planf, text=label).grid(row=r, column=0, sticky="w",
+                                              padx=6, pady=2)
+            box = ttk.Frame(planf)
+            box.grid(row=r, column=1, columnspan=3, sticky="w", pady=2)
+            for val, text in options:
+                ttk.Radiobutton(box, text=text, value=val,
+                                variable=self.vars[key])\
+                    .pack(side="left", padx=(0, 18))
+        radios(0, "Save the plan as:", "plan_format",
+               (("pdf", "PDF"), ("jpg", "JPG"), ("both", "Both")))
+        radios(1, "Paper orientation:", "plan_orientation",
+               (("auto", "Auto (portrait first)"), ("portrait", "Portrait"),
+                ("landscape", "Landscape")))
+        radios(2, "Show the site as:", "plan_style",
+               (("outline", "Red outline"), ("fill", "Pink fill")))
+        crow = ttk.Frame(planf)
+        crow.grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(crow, text="Give each title number its own colour, "
+                        "using the field:", variable=self.vars["plan_colour_by"])\
+            .pack(side="left")
+        ttk.Entry(crow, textvariable=self.vars["plan_colour_field"], width=14)\
+            .pack(side="left", padx=6)
+        srow = ttk.Frame(planf)
+        srow.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=2)
+        ttk.Label(srow, text="Add to the drawing number:").pack(side="left")
+        ttk.Entry(srow, textvariable=self.vars["drawing_suffix"], width=8)\
+            .pack(side="left", padx=6)
+        ttk.Label(srow, text="(e.g. ZAA29728 becomes ZAA29728-01; leave blank "
+                  "for none)", foreground="#666").pack(side="left")
+        ttk.Label(planf, foreground="#666", justify="left", wraplength=900, text=(
+            "JPG needs the Pillow package (pip install pillow). The logo, "
+            "company details and colours on the plan come from plan_logo.jpg "
+            "and plan_template.json in the pipeline scripts folder.")).grid(
+            row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 4))
 
         prevf = ttk.LabelFrame(settings_tab, text="Preview")
         prevf.pack(fill="x", padx=8, pady=(0, 8))
@@ -861,7 +898,8 @@ class App(tk.Tk):
                 j["plan_error"] = f"{PLAN} not found in the pipeline scripts folder"
             else:
                 try:
-                    lay = mod.choose_layout(self.shapes[good[0]]["bbox"])
+                    lay = mod.choose_layout(self.shapes[good[0]]["bbox"],
+                                            self.vars["plan_orientation"].get())
                     j["plan_layout"] = lay
                     j["box"] = buffered_box(union_bbox([j["box"], lay["ground"]]), 0)
                 except ValueError as exc:
@@ -1313,12 +1351,22 @@ class App(tk.Tk):
         v_title = tk.StringVar()
         v_draw = tk.StringVar()
         v_name = tk.StringVar(value=f"{stem}_plan")
+        suffix = self.vars["drawing_suffix"].get().strip()
+
+        def full_drawing():
+            d = v_draw.get().strip()
+            if d and suffix and not d.endswith(suffix):
+                d += suffix
+            return d
         v_dir = tk.StringVar(value=str(job["site_dir"]))
         name_edited = [False]
 
+        v_printed = tk.StringVar(value="")
+
         def follow_drawing(*_):
+            d = full_drawing()
+            v_printed.set(f"On the plan: {d}" if d else "")
             if not name_edited[0]:
-                d = v_draw.get().strip()
                 v_name.set(safe_name(d) if d else f"{stem}_plan")
         v_draw.trace_add("write", follow_drawing)
 
@@ -1329,25 +1377,32 @@ class App(tk.Tk):
             return e
         e_title = row(0, "Plan title:", v_title)
         row(1, "Drawing number:", v_draw)
-        e_name = row(2, "File name:", v_name)
+        ttk.Label(frm, textvariable=v_printed, foreground="#555")\
+            .grid(row=2, column=1, columnspan=2, sticky="w")
+        e_name = row(3, "File name:", v_name)
         e_name.bind("<Key>", lambda e: name_edited.__setitem__(0, True))
-        ttk.Label(frm, text="Save in folder:").grid(row=3, column=0, sticky="w", pady=3)
-        ttk.Entry(frm, textvariable=v_dir, width=36).grid(row=3, column=1,
+        ttk.Label(frm, text="Save in folder:").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Entry(frm, textvariable=v_dir, width=36).grid(row=4, column=1,
                                                           sticky="ew", pady=3)
 
         def browse():
             d = filedialog.askdirectory(parent=win, initialdir=v_dir.get() or None)
             if d:
                 v_dir.set(str(Path(d)))
-        ttk.Button(frm, text="Browse…", command=browse).grid(row=3, column=2,
+        ttk.Button(frm, text="Browse…", command=browse).grid(row=4, column=2,
                                                               padx=(6, 0), pady=3)
         info = (f"Output: {' + '.join(e[1:].upper() for e in exts)}  "
                 "(change on the Settings tab)")
         if lay:
             info += (f"\nScale 1:{lay['scale']:,} on {lay['paper']} "
                      f"{lay['orientation']}, chosen to fit the shapefile")
+        info += "\nSite shown as " + ("a pink fill" if self.vars["plan_style"].get()
+                                     == "fill" else "a red outline")
+        if self.vars["plan_colour_by"].get():
+            info += (", a colour per '"
+                     + self.vars["plan_colour_field"].get().strip() + "'")
         ttk.Label(frm, text=info, foreground="#555", justify="left")\
-            .grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 4))
+            .grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 4))
         result = {}
 
         def ok():
@@ -1368,11 +1423,11 @@ class App(tk.Tk):
                     + "\n".join(exist), parent=win):
                 return
             result.update(title=v_title.get().strip(),
-                          drawing=v_draw.get().strip(), base=str(base))
+                          drawing=full_drawing(), base=str(base))
             win.destroy()
 
         btns = ttk.Frame(frm)
-        btns.grid(row=5, column=0, columnspan=3, sticky="e", pady=(8, 0))
+        btns.grid(row=6, column=0, columnspan=3, sticky="e", pady=(8, 0))
         ttk.Button(btns, text="Make plan", style="Run.TButton",
                    command=ok).pack(side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left")
@@ -1508,7 +1563,12 @@ class App(tk.Tk):
                               "--title", plan["title"],
                               "--drawing", plan["drawing"],
                               "--output", plan["base"],
-                              "--format", self.vars["plan_format"].get()]
+                              "--format", self.vars["plan_format"].get(),
+                              "--orientation", self.vars["plan_orientation"].get(),
+                              "--style", self.vars["plan_style"].get()]
+                    field = self.vars["plan_colour_field"].get().strip()
+                    if self.vars["plan_colour_by"].get() and field:
+                        p_args += ["--colour-by", field]
                     rc, _ = self._exec(script_command(sdir / PLAN, p_args))
                     if self.stop_flag.is_set():
                         break

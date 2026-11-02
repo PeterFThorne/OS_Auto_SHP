@@ -1,5 +1,5 @@
 {
-  "_note": "Company details printed on the site plan (osmm_plan.py). Edit as needed; 'logo' is a JPEG file in this folder.",
+  "_note": "Company details and colours on the site plan (osmm_plan.py). Edit as needed: 'logo' is a JPEG in this folder; colours are #RRGGBB; 'title_colours' are used in order when each title number gets its own colour.",
   "logo": "plan_logo.jpg",
   "address": [
     "Little Cutsey, Cutsey, Taunton. Somerset. TA3 7NY",
@@ -13,5 +13,19 @@
     "Licence No. VA 100033416"
   ],
   "boundary_colour": "#ff0000",
-  "boundary_width_pt": 1.5
+  "boundary_width_pt": 1.5,
+  "fill_colour": "#f9b9cf",
+  "fill_edge_colour": "#e0457b",
+  "title_colours": [
+    "#ff0000",
+    "#0057e7",
+    "#00a651",
+    "#ff8c00",
+    "#8e44ad",
+    "#00a5b5",
+    "#c2185b",
+    "#8d6e00",
+    "#4caf50",
+    "#3f51b5"
+  ]
 }

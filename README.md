@@ -1,6 +1,6 @@
 # OS Shapefile Tool
 
-Version 1.6.0. Sister app to the OS Point Tool (`OS_Automation`).
+Version 1.6.1. Sister app to the OS Point Tool (`OS_Automation`).
 
 A separate desktop app for the same OS MasterMap -> MapInfo 8.5 pipeline.
 Instead of a centre grid reference and box size, the site comes from one or
@@ -26,6 +26,7 @@ OS_Auto_SHP\
     osmm_plan.py             (site plan, PDF/JPG)
     plan_logo.jpg            (logo on the plan)
     plan_template.json       (company details on the plan; edit as needed)
+    build_exe.bat            (packages the app for other PCs, see below)
     README.md
 ```
 
@@ -119,8 +120,11 @@ with the OS Point Tool); with no internet it shows a plain background.
   Z/M values. A single point gives a 600 x 600 m box.
 - Sites over 20 km across ask for confirmation before running.
 - The shapefile list starts empty each time, so an old job can't be re-run
-  by accident. Folder choices and ticks are remembered in
-  `osmm_gui_v2_settings.json` (separate from v1's settings).
+  by accident. Folder choices and ticks are remembered per Windows user, in
+  `%APPDATA%\OS_Shapefile_Tool\osmm_gui_v2_settings.json`, so several people
+  can share one copy of the app without overwriting each other's settings
+  (settings from older versions, saved next to the app, are carried over
+  on first run).
 
 ## Output
 
@@ -202,6 +206,34 @@ The plan (`osmm_plan.py`) follows the company layout:
   logo file, the boundary colour and line width, the pink fill colours and
   the per-title colours are in `plan_template.json`.
 
+## Sharing the app with other PCs
+
+`build_exe.bat` packages the app as a normal Windows program, so other PCs
+need no Python, GDAL or Pillow.
+
+1. On this PC (it has Python), double-click `build_exe.bat` in the
+   OS_Auto_SHP folder. It installs/updates PyInstaller, pyogrio and Pillow,
+   builds the program (a few minutes), and makes:
+   - `dist\OS_Shapefile_Tool\` - the program folder;
+   - `dist\OS_Shapefile_Tool_vX.Y.Z.zip` - the same folder, zipped.
+2. Test it: double-click `dist\OS_Shapefile_Tool\OS_Shapefile_Tool.exe`.
+3. Share the zip. On the other PC, unzip it anywhere (or onto a shared
+   drive) and run `OS_Shapefile_Tool.exe` from inside the unzipped folder.
+   Keep the whole folder together: the program runs the pipeline scripts,
+   logo and `plan_template.json` that sit next to it.
+
+Notes for the other PCs:
+- They need access to the OS data (M: drive). If it's mapped differently,
+  set *OS data* on the Settings tab once.
+- The tile index (`osmm_tile_index.json`) is copied in, so the first run
+  doesn't re-scan M:. If tiles are added later, tick *Rebuild tile index*.
+- Plan map text uses Century Gothic if installed (comes with Office),
+  otherwise Arial.
+- Windows may warn about an unknown publisher the first time; choose
+  *More info > Run anyway*.
+- To update everyone, rebuild and share the new zip; settings are kept
+  (they live in each user's AppData, not in the program folder).
+
 ## How the box is built
 
 The box is rounded outwards to whole metres and made an even size, so the
@@ -213,6 +245,7 @@ keeps whole features touching the box (ragged edge), as before.
 
 | Version | Changes |
 |---|---|
+| 1.6.1 | Packaging for other PCs (`build_exe.bat`); settings saved per Windows user in AppData; scripts folder falls back to the app's own folder; errors in the packaged app go to the log |
 | 1.6.0 | 'Save the OS MasterMap data' tick box: untick to get just the plan and/or shapefile TAB (OS data for the plan is extracted to a temporary folder and removed) |
 | 1.5.1 | Key: hollow boxes (in the outline colour) instead of lines when the site is shown as an outline |
 | 1.5.0 | Site plan: optional key listing each title number, optionally with its area in hectares and acres; title number field set once for colours and key |

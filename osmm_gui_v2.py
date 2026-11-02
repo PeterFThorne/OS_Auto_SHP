@@ -44,8 +44,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "OS Shapefile Tool"
-APP_VERSION = "1.6.0"   # bump this each time you change the app; add a line below
+APP_VERSION = "1.6.1"   # bump this each time you change the app; add a line below
 # Version history (newest first) - also listed in README.md
+#   1.6.1  Packaging (build_exe.bat); settings per user in AppData
 #   1.6.0  Option to not save the OS data (plan and/or shapefile TAB only)
 #   1.5.1  Key shows hollow boxes for outlined sites
 #   1.5.0  Site plan: optional key per title number, optionally with each
@@ -166,6 +167,13 @@ def set_windows_app_id():
             f"OSMM.OSShapefileTool.{APP_VERSION}")
     except Exception:
         pass
+
+
+def settings_dir() -> Path:
+    """Per-user folder for settings, so several people can share one copy of
+    the app (e.g. on a network drive) without overwriting each other's."""
+    base = os.environ.get("APPDATA") or os.path.join(Path.home(), ".config")
+    return Path(base) / "OS_Shapefile_Tool"
 
 
 def script_command(script: Path, args):
@@ -453,7 +461,7 @@ class App(tk.Tk):
         self.geometry(f"{w}x{h}")
         self.minsize(min(int(920 * k), w), min(int(640 * k), h))
 
-        self.settings_path = app_dir() / SETTINGS_NAME
+        self.settings_path = settings_dir() / SETTINGS_NAME
         self.settings = dict(DEFAULTS)
         self._load_settings()
 
@@ -487,7 +495,9 @@ class App(tk.Tk):
                     "delete_gml", "save_log", "style_boundary",
                     "plan_colour_by", "plan_key", "plan_key_area"):
             self.vars[key] = tk.BooleanVar(value=bool(self.settings.get(key)))
-        if not self.vars["scripts_dir"].get():
+        # A scripts folder that doesn't exist (e.g. a different PC) falls back
+        # to the folder the app itself is in.
+        if not (Path(self.vars["scripts_dir"].get() or ".") / STAGE1).exists():
             self.vars["scripts_dir"].set(str(app_dir()))
 
         self._build_styles()
@@ -530,9 +540,19 @@ class App(tk.Tk):
 
     # ----- settings -------------------------------------------------------
     def _load_settings(self):
+        path = self.settings_path
+        if not path.exists():
+            # First run: carry over settings saved next to the app by older
+            # versions, if any. A packaged app always uses the scripts that
+            # come with it, not a saved development folder.
+            path = app_dir() / SETTINGS_NAME
+            if not path.exists():
+                return
         try:
-            self.settings.update(json.loads(
-                self.settings_path.read_text(encoding="utf-8")))
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if FROZEN and path != self.settings_path:
+                saved.pop("scripts_dir", None)
+            self.settings.update(saved)
         except Exception:
             pass
 
@@ -540,6 +560,7 @@ class App(tk.Tk):
         s = {k: v.get() for k, v in self.vars.items()}
         s["last_dir"] = self.settings.get("last_dir", "")
         try:
+            self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             self.settings_path.write_text(json.dumps(s, indent=2),
                                           encoding="utf-8")
         except Exception:
@@ -1732,12 +1753,33 @@ class App(tk.Tk):
         self.destroy()
 
 
+def run_script_mode():
+    """Used by the packaged .exe, which re-launches itself to run a pipeline
+    script: OS_Shapefile_Tool.exe --run-script X.py args"""
+    script = sys.argv[2]
+    sys.argv = [script, *sys.argv[3:]]
+    sys.path.insert(0, str(Path(script).resolve().parent))
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        try:
+            stream.reconfigure(line_buffering=True, encoding="utf-8",
+                               errors="replace")
+        except Exception:
+            pass
+    try:
+        runpy.run_path(script, run_name="__main__")
+    except SystemExit:
+        raise
+    except BaseException:
+        # Into the app's log, not a pop-up error box.
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "--run-script":
-        script = sys.argv[2]
-        sys.argv = [script] + sys.argv[3:]
-        sys.path.insert(0, str(Path(script).parent))
-        runpy.run_path(script, run_name="__main__")
+        run_script_mode()
         return
     set_dpi_awareness()
     set_windows_app_id()
